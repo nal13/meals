@@ -113,8 +113,7 @@ function saveIngredients(dict) { db.collection('data').doc('ingredients').set({ 
 function saveShopping()        { db.collection('data').doc('shopping').set({ extra: shoppingExtra, done: shoppingDone, generated: generatedFromWeek }).catch(console.error); }
 function saveHistory(h)        { db.collection('data').doc('history').set({ items: h }).catch(console.error); }
 
-function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2); }
-function esc(s) { return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+// uid() and esc() are defined in utils.js
 
 // ---- Week grid --------------------------------------------------------------
 
@@ -966,7 +965,7 @@ function addIngredientToDict(nameOverride) {
 
 var modalOverlay = document.getElementById('modal-overlay');
 var editingId    = null;
-var DEFAULT_ICONS = ['🍝','🍜','🍲','🥘','🍛','🍣','🥗','🍕','🥩','🍗','🍖','🐟','🥚','🥞','🧀','🥓','🌮','🌯','🥙','🫕','🍱','🥣','🧆','🍤','🍳','🥐','🥖','🫔','🍅','🥦','🥕','🍰','🧁','🍩','🍪','🍦','🎂','🥧','🫐','🍓'];
+// DEFAULT_ICONS is defined in utils.js
 var pendingIcon  = DEFAULT_ICONS[0];
 
 function renderIconPicker(selected) {
@@ -1454,38 +1453,7 @@ document.getElementById('import-confirm').addEventListener('click', function() {
 
 // ---- Auto-icon & Deduplication ----------------------------------------------
 
-function autoAssignIcon(name, ingredients) {
-    var text = (name || '').toLowerCase() + ' ' +
-               (ingredients || []).map(function(i){ return (i.name||'').toLowerCase(); }).join(' ');
-    var rules = [
-        [/pasta|esparguete|spaghetti|penne|rigatoni|fettuccine|linguine|lasanha|lasagna|bolognese|carbonara|macarr/i, '🍝'],
-        [/sopa|soup|caldo|broth|bisque|chowder|stew|guisado|cozido|ensopado/i, '🍲'],
-        [/salad|salada|coleslaw|caesar/i, '🥗'],
-        [/curry|tikka|masala|vindaloo/i, '🍛'],
-        [/sushi|maki|nigiri|temaki/i, '🍣'],
-        [/pizza/i, '🍕'],
-        [/pad.?thai|noodle|ramen|pho|yakisoba|stir.?fry|wok/i, '🍜'],
-        [/taco|burrito|fajita|quesadilla/i, '🌮'],
-        [/wrap|pita|flatbread/i, '🌯'],
-        [/frango|chicken|galinha/i, '🍗'],
-        [/porco|pork|entrecosto|ribs|sausage|salsichas|chourico|linguica/i, '🍖'],
-        [/beef|vaca|borrego|lamb|steak|bife|ground beef|carne\s*(picada|assada|de vaca)/i, '🥩'],
-        [/peixe|fish|salmao|salmon|atum|tuna|bacalhau|cod|camarao|shrimp|marisco|seafood/i, '🐟'],
-        [/bacon|presunto|ham/i, '🥓'],
-        [/ovo|egg|ovos|omelette|frittata|quiche/i, '🥚'],
-        [/panqueca|pancake|waffle/i, '🥞'],
-        [/brownie|muffin|bolinho/i, '🧁'],
-        [/bolo|cake|tarte|torta|cheesecake/i, '🎂'],
-        [/queijo|cheese|feta|mozzarella|parmesao|parmesan/i, '🧀'],
-        [/arroz|rice|paella|risotto/i, '🍚'],
-        [/feijao|bean|lentilha|lentil|grao|chickpea|tofu|vegano|vegan/i, '🫕'],
-        [/hamburguer|burger/i, '🍔'],
-    ];
-    for (var i = 0; i < rules.length; i++) {
-        if (rules[i][0].test(text)) return rules[i][1];
-    }
-    return DEFAULT_ICONS[0];
-}
+// autoAssignIcon() is defined in utils.js
 
 function _runDedup(silent) {
     // --- Step 1: Deduplicate ---

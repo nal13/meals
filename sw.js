@@ -1,9 +1,10 @@
 'use strict';
 
-var CACHE = 'mp-v3';
+var CACHE = 'mp-v4';
 var FILES = [
     './index.html',
     './style.css',
+    './utils.js',
     './script.js',
     './manifest.json',
     './icon-192.png',
