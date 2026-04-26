@@ -32,6 +32,8 @@ Aplicação web PWA para planear refeições semanais, gerir receitas e gerar li
 - Botões editar e apagar em cada card
 - Modal para criar/editar receitas (com autocomplete de ingredientes)
 - Modal para visualizar receita completa
+- **Auto-icon**: ícone/emoji atribuído automaticamente com base no nome e ingredientes da receita
+- **Limpar duplicadas**: botão para remover receitas duplicadas e corrigir ícones (também corre silenciosamente ao carregar a app)
 
 ### 🧅 Ingredientes
 - Dicionário centralizado de ingredientes

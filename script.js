@@ -51,6 +51,8 @@ function _checkReady() {
         renderShoppingList();
         renderRecipesTab();
         renderHistorico();
+        // Auto-clean duplicates and fix icons silently on every load
+        setTimeout(deduplicateAndFixIconsSilent, 500);
     }
 }
 
@@ -1063,6 +1065,7 @@ document.getElementById('icon-custom-input').addEventListener('input', function(
 
 document.getElementById('add-ingredient-row').addEventListener('click', function() { rebuildDatalist(); addIngredientRow(); });
 document.getElementById('open-add-recipe').addEventListener('click', function() { rebuildDatalist(); openAddModal(null); });
+document.getElementById('dedup-btn').addEventListener('click', deduplicateAndFixIcons);
 document.getElementById('modal-delete').addEventListener('click', function() {
     var rid = this.dataset.rid;
     if (!rid) return;
@@ -1448,5 +1451,101 @@ document.getElementById('import-confirm').addEventListener('click', function() {
 
     switchTab('lista');
 })();
+
+// ---- Auto-icon & Deduplication ----------------------------------------------
+
+function autoAssignIcon(name, ingredients) {
+    var text = (name || '').toLowerCase() + ' ' +
+               (ingredients || []).map(function(i){ return (i.name||'').toLowerCase(); }).join(' ');
+    var rules = [
+        [/pasta|esparguete|spaghetti|penne|rigatoni|fettuccine|linguine|lasanha|lasagna|bolognese|carbonara|macarr/i, '🍝'],
+        [/sopa|soup|caldo|broth|bisque|chowder|stew|guisado|cozido|ensopado/i, '🍲'],
+        [/salad|salada|coleslaw|caesar/i, '🥗'],
+        [/curry|tikka|masala|vindaloo/i, '🍛'],
+        [/sushi|maki|nigiri|temaki/i, '🍣'],
+        [/pizza/i, '🍕'],
+        [/pad.?thai|noodle|ramen|pho|yakisoba|stir.?fry|wok/i, '🍜'],
+        [/taco|burrito|fajita|quesadilla/i, '🌮'],
+        [/wrap|pita|flatbread/i, '🌯'],
+        [/frango|chicken|galinha/i, '🍗'],
+        [/porco|pork|entrecosto|ribs|sausage|salsichas|chourico|linguica/i, '🍖'],
+        [/beef|vaca|borrego|lamb|steak|bife|ground beef|carne\s*(picada|assada|de vaca)/i, '🥩'],
+        [/peixe|fish|salmao|salmon|atum|tuna|bacalhau|cod|camarao|shrimp|marisco|seafood/i, '🐟'],
+        [/bacon|presunto|ham/i, '🥓'],
+        [/ovo|egg|ovos|omelette|frittata|quiche/i, '🥚'],
+        [/panqueca|pancake|waffle/i, '🥞'],
+        [/brownie|muffin|bolinho/i, '🧁'],
+        [/bolo|cake|tarte|torta|cheesecake/i, '🎂'],
+        [/queijo|cheese|feta|mozzarella|parmesao|parmesan/i, '🧀'],
+        [/arroz|rice|paella|risotto/i, '🍚'],
+        [/feijao|bean|lentilha|lentil|grao|chickpea|tofu|vegano|vegan/i, '🫕'],
+        [/hamburguer|burger/i, '🍔'],
+    ];
+    for (var i = 0; i < rules.length; i++) {
+        if (rules[i][0].test(text)) return rules[i][1];
+    }
+    return DEFAULT_ICONS[0];
+}
+
+function _runDedup(silent) {
+    // --- Step 1: Deduplicate ---
+    var byName = {};
+    Object.keys(recipes).forEach(function(id) {
+        var key = (recipes[id].name || '').toLowerCase().trim();
+        if (!byName[key]) byName[key] = [];
+        byName[key].push(id);
+    });
+
+    var toDelete = [];
+    Object.keys(byName).forEach(function(key) {
+        var ids = byName[key];
+        if (ids.length <= 1) return;
+        // Prefer the one whose icon is NOT the bare default
+        ids.sort(function(a, b) {
+            var aDefault = (recipes[a].icon === DEFAULT_ICONS[0] || !recipes[a].icon);
+            var bDefault = (recipes[b].icon === DEFAULT_ICONS[0] || !recipes[b].icon);
+            if (aDefault && !bDefault) return 1;
+            if (!aDefault && bDefault) return -1;
+            return 0;
+        });
+        for (var i = 1; i < ids.length; i++) {
+            var keepId = ids[0];
+            var delId  = ids[i];
+            Object.keys(week).forEach(function(d) {
+                if (week[d] === delId) week[d] = keepId;
+            });
+            delete recipes[delId];
+            deleteRecipeDb(delId);
+            toDelete.push(delId);
+        }
+    });
+
+    if (toDelete.length) saveWeek(week);
+
+    // --- Step 2: Auto-assign icons ---
+    var iconCount = 0;
+    Object.keys(recipes).forEach(function(id) {
+        var newIcon = autoAssignIcon(recipes[id].name, recipes[id].ingredients);
+        if (newIcon !== recipes[id].icon) {
+            recipes[id].icon = newIcon;
+            saveRecipe(id, recipes[id]);
+            iconCount++;
+        }
+    });
+
+    refreshAllSelects();
+    renderRecipesGrid();
+
+    if (!silent) {
+        var msg = '';
+        if (toDelete.length) msg += toDelete.length + ' duplicada(s) removida(s). ';
+        else msg += 'Sem duplicatas encontradas. ';
+        msg += iconCount + ' ícone(s) atualizados.';
+        alert(msg);
+    }
+}
+
+function deduplicateAndFixIcons() { _runDedup(false); }
+function deduplicateAndFixIconsSilent() { _runDedup(true); }
 
 // ---- Init (triggered by Firestore via _checkReady) --------------------------
