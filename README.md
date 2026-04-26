@@ -103,6 +103,7 @@ Depois abre `http://localhost:8080` no browser ou `http://[IP-do-computador]:808
 meal-planner/
 ├── index.html                — estrutura da página
 ├── style.css                 — estilos visuais + responsivo mobile
+├── utils.js                  — funções puras (autoAssignIcon, esc, uid)
 ├── script.js                 — lógica completa da aplicação + Firebase
 ├── manifest.json             — configuração PWA
 ├── sw.js                     — Service Worker (cache offline)
@@ -111,7 +112,10 @@ meal-planner/
 ├── generate-icons.py         — script para regenerar os ícones PNG
 ├── rebuild.py                — utilitário de build
 ├── template_importacao.json  — template para importar receitas
-├── NOTAS_PROJETO.md          — notas de desenvolvimento
+├── tests/utils.test.js       — testes Jest (32 testes)
+├── package.json              — dependências de desenvolvimento (Jest)
+├── AGENTS.md                 — guia para agentes AI
+├── PRD.md                    — product requirements document
 └── README.md                 — este ficheiro
 ```
 
