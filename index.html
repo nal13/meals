@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Planeador de Refeicoes</title>
+    <meta name="theme-color" content="#0969da">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <meta name="apple-mobile-web-app-title" content="Refeições">
+    <link rel="manifest" href="manifest.json">
+    <link rel="apple-touch-icon" href="icon-192.png">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div id="loading-overlay" style="position:fixed;inset:0;background:#f6f8fa;display:flex;align-items:center;justify-content:center;z-index:200;flex-direction:column;gap:.75rem">
+    <svg width="40" height="40" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" style="animation:spin 1s linear infinite"><circle cx="20" cy="20" r="16" stroke="#d0d7de" stroke-width="4"/><path d="M20 4a16 16 0 0 1 16 16" stroke="#0969da" stroke-width="4" stroke-linecap="round"/></svg>
+    <span style="font-size:.95rem;color:#656d76;font-family:system-ui">A carregar...</span>
+</div>
+<style>@keyframes spin{to{transform:rotate(360deg)}}</style>
+
+<header>
+    <h1>Planeador de Refeicoes</h1>
+</header>
+
+<datalist id="ing-datalist"></datalist>
+
+<main>
+    <div class="left-col">
+
+        <!-- TAB: LISTA -->
+        <section id="section-lista">
+            <h2>Lista</h2>
+            <div class="subtab-actions" style="justify-content:space-between">
+                <div style="display:flex;gap:.5rem">
+                    <button class="btn-outline" id="show-shop-add-btn" onclick="toggleShopAdd(true)">+ Ingrediente</button>
+                    <button class="btn-outline" id="edit-list-btn">&#x270E; Editar</button>
+                </div>
+                <button class="btn-outline" id="clear-list-btn">Limpar</button>
+            </div>
+            <div id="shopping-add-row" class="shopping-add-row hidden">
+                <input type="text" id="shop-add-name" placeholder="Ingrediente" class="shop-add-input">
+                <input type="number" id="shop-add-qty" placeholder="Qtd" min="0" step="any" class="shop-add-qty">
+                <button class="btn-primary" id="shop-add-btn">+</button>
+                <button class="btn-icon" onclick="toggleShopAdd(false)">✕</button>
+            </div>
+            <div id="shopping-empty" class="empty-msg">Clica em "Gerar Lista" para criar a lista a partir da semana atual.</div>
+            <ul id="shopping-list"></ul>
+        </section>
+
+        <!-- TAB: SEMANA -->
+        <section id="section-semana">
+            <h2>Semana</h2>
+            <div class="subtab-actions" style="margin-bottom:.85rem;justify-content:space-between">
+                <button class="btn-outline" id="gerar-lista-btn">&#x1F4CB; Gerar Lista</button>
+                <button class="btn-outline" id="clear-week-btn">Limpar</button>
+            </div>
+            <div class="week-grid" id="week-grid"></div>
+        </section>
+
+        <section id="section-sopa">
+            <div class="section-header">
+                <h2>Sopa</h2>
+                <button class="btn-outline" id="add-sopa-row">+ Ingrediente</button>
+            </div>
+            <div id="sopa-list"></div>
+            <div id="sopa-empty" class="empty-msg">Adiciona ingredientes da sopa aqui.</div>
+        </section>
+
+        <section id="section-extra">
+            <div class="section-header">
+                <h2>Extra Semanal</h2>
+                <button class="btn-outline" id="add-extra-row">+ Ingrediente</button>
+            </div>
+            <div id="extra-list"></div>
+            <div id="extra-empty" class="empty-msg">Adiciona ingredientes extra aqui.</div>
+        </section>
+
+        <!-- TAB: RECEITAS -->
+        <section id="section-receitas">
+            <!-- Subtabs -->
+            <div class="subtab-bar">
+                <button class="subtab-btn active" data-subtab="receitas-grid">Receitas</button>
+                <button class="subtab-btn" data-subtab="ingredientes-dict">Ingredientes</button>
+                <button class="subtab-btn" data-subtab="historico">Hist&#xF3;rico</button>
+                <button class="subtab-btn" data-subtab="import-json">Import</button>
+            </div>
+
+            <!-- Subtab: Receitas -->
+            <div id="subtab-receitas-grid">
+                <div class="subtab-actions">
+                    <button class="btn-outline" id="open-add-recipe">+ Nova Receita</button>
+                </div>
+                <div id="recipes-grid" class="recipes-grid"></div>
+                <div id="recipes-empty" class="empty-msg hidden">Ainda nao tens receitas.</div>
+            </div>
+
+            <!-- Subtab: Ingredientes -->
+            <div id="subtab-ingredientes-dict" class="hidden">
+                <div class="subtab-actions">
+                    <button class="btn-outline" id="show-ing-add-btn" onclick="toggleIngAdd(true)">+ Novo Ingrediente</button>
+                </div>
+                <div id="ing-dict-add-row" class="ing-dict-add-row hidden">
+                    <input type="text" id="ing-dict-input" placeholder="Novo ingrediente" class="ing-dict-input">
+                    <button class="btn-primary" id="ing-dict-add-btn">+</button>
+                    <button class="btn-icon" onclick="toggleIngAdd(false)">✕</button>
+                </div>
+                <!-- Header row -->
+                <div class="ing-dict-header">
+                    <span class="ing-dict-header-name"></span>
+                    <span class="ing-dict-header-flag">Sopa</span>
+                    <span class="ing-dict-header-flag">Extra</span>
+                    <span class="ing-dict-header-btns"></span>
+                </div>
+                <div id="ing-dict-empty" class="empty-msg">Sem ingredientes no dicionario.</div>
+                <div id="ing-dict-list" class="ing-dict-list"></div>
+            </div>
+
+            <!-- Subtab: Histórico -->
+            <div id="subtab-historico" class="hidden"></div>
+
+            <!-- Subtab: Import / Export -->
+            <div id="subtab-import-json" class="hidden">
+                <div class="subtab-actions" style="flex-direction:column;gap:.75rem;align-items:flex-start">
+                    <div>
+                        <p class="subtab-desc">Importa receitas e ingredientes a partir de um ficheiro JSON.</p>
+                        <label class="btn-outline" for="import-file-input" style="margin-top:.5rem;display:inline-block">&#x1F4C2; Importar JSON</label>
+                        <input type="file" id="import-file-input" accept=".json" hidden>
+                    </div>
+                    <div>
+                        <p class="subtab-desc">Exporta todas as receitas e ingredientes para um ficheiro JSON (backup).</p>
+                        <button class="btn-outline" id="export-btn" style="margin-top:.5rem">&#x2B07; Exportar JSON</button>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+    </div>
+</main>
+
+<!-- Modal Adicionar/Editar Receita -->
+<div class="modal-overlay hidden" id="modal-overlay">
+    <div class="modal">
+        <div class="modal-header">
+            <h3 id="modal-title">Nova Receita</h3>
+            <button class="modal-close" id="modal-close">X</button>
+        </div>
+        <div class="modal-body">
+            <label>Nome da receita
+                <input type="text" id="recipe-name-input" placeholder="ex: Esparguete a Bolonhesa">
+            </label>
+            <div>
+                <div class="icon-picker-label">
+                    <span class="field-label">Ícone</span>
+                </div>
+                <div id="icon-picker" class="icon-picker"></div>
+                <div class="icon-custom-row">
+                    <input type="text" id="icon-custom-input" class="icon-custom-input" placeholder="outro emoji…" maxlength="4">
+                </div>
+            </div>
+            <div class="ingredients-header">
+                <span class="field-label">Ingredientes</span>
+                <button class="btn-small" id="add-ingredient-row">+ Adicionar</button>
+            </div>
+            <div id="ingredients-list"></div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn-soft-danger hidden" id="modal-delete">Apagar Receita</button>
+            <div style="display:flex;gap:.5rem;margin-left:auto">
+                <button class="btn-outline" id="modal-cancel">Cancelar</button>
+                <button class="btn-primary" id="modal-save">Guardar Receita</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Modal Ver Receita -->
+<div class="modal-overlay hidden" id="view-overlay">
+    <div class="modal">
+        <div class="modal-header">
+            <div>
+                <h3 id="view-title"></h3>
+                <span id="view-type-badge" class="recipe-type-badge"></span>
+            </div>
+            <button class="modal-close" id="view-close">X</button>
+        </div>
+        <div class="modal-body" id="view-body"></div>
+        <div class="modal-footer">
+            <button class="btn-outline" id="view-edit">Editar</button>
+            <button class="btn-soft-danger" id="view-delete">Apagar</button>
+            <button class="btn-primary" id="view-close-btn">Fechar</button>
+        </div>
+    </div>
+</div>
+
+<!-- Modal Importar JSON -->
+<div class="modal-overlay hidden" id="import-overlay">
+    <div class="modal modal-wide">
+        <div class="modal-header">
+            <h3>Importar do JSON</h3>
+            <button class="modal-close" id="import-close">X</button>
+        </div>
+        <div class="modal-body" id="import-body">
+            <!-- preenchido dinamicamente -->
+        </div>
+        <div class="modal-footer">
+            <button class="btn-outline" id="import-cancel">Cancelar</button>
+            <button class="btn-primary" id="import-confirm">Importar tudo</button>
+        </div>
+    </div>
+</div>
+
+<!-- Modal Confirmar Gerar Lista -->
+<div class="modal-overlay hidden" id="gerar-overlay">
+    <div class="modal modal-wide">
+        <div class="modal-header">
+            <h3>Remove ingredientes que tens em casa</h3>
+            <button class="modal-close" id="gerar-close">X</button>
+        </div>
+        <div class="modal-body" id="gerar-body">
+            <!-- preenchido dinamicamente -->
+        </div>
+        <div class="modal-footer">
+            <button class="btn-outline" id="gerar-cancel">Cancelar</button>
+            <button class="btn-primary" id="gerar-aprovar">&#x2713; Aprovar Lista</button>
+        </div>
+    </div>
+</div>
+
+<!-- Bottom nav (visivel apenas em mobile) -->
+<nav class="bottom-nav" id="bottom-nav">
+    <button class="tab-btn active" data-tab="lista">
+        <span class="tab-icon">🛒</span>
+        <span class="tab-label">Lista</span>
+    </button>
+    <button class="tab-btn" data-tab="semana">
+        <span class="tab-icon">🗓</span>
+        <span class="tab-label">Semana</span>
+    </button>
+    <button class="tab-btn" data-tab="receitas">
+        <span class="tab-icon">🍽</span>
+        <span class="tab-label">Receitas</span>
+    </button>
+</nav>
+
+<script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-firestore-compat.js"></script>
+<script src="script.js"></script>
+<script>
+    if ('serviceWorker' in navigator && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
+        window.addEventListener('load', function () {
+            navigator.serviceWorker.register('./sw.js');
+        });
+    }
+</script>
+</body>
+</html>

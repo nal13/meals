@@ -1,0 +1,40 @@
+{
+  "_instrucoes": "Preenche este ficheiro e importa-o na app. Remove ou ignora este campo _instrucoes.",
+  "_tipos_validos": "type deve ser 'main' (prato principal) ou 'side' (sopa, sobremesa, acompanhamento)",
+
+  "ingredients": [
+    "Leite",
+    "Ovos",
+    "Farinha",
+    "Azeite",
+    "Sal",
+    "Pimenta",
+    "Alho",
+    "Cebola"
+  ],
+
+  "recipes": [
+    {
+      "name": "Esparguete a Bolonhesa",
+      "type": "main",
+      "ingredients": [
+        { "name": "Esparguete", "qty": 200 },
+        { "name": "Carne picada", "qty": 300 },
+        { "name": "Cebola", "qty": 1 },
+        { "name": "Alho", "qty": 2 },
+        { "name": "Azeite", "qty": 30 }
+      ]
+    },
+    {
+      "name": "Sopa de Legumes",
+      "type": "side",
+      "ingredients": [
+        { "name": "Cenoura", "qty": 2 },
+        { "name": "Batata", "qty": 3 },
+        { "name": "Cebola", "qty": 1 },
+        { "name": "Sal", "qty": 5 },
+        { "name": "Azeite", "qty": 20 }
+      ]
+    }
+  ]
+}
