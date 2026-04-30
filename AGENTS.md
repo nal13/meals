@@ -3,7 +3,7 @@
 ## Architecture
 
 Vanilla JS PWA with no build step. Three layers:
-- **`utils.js`** — pure functions (`autoAssignIcon`, `esc`, `uid`, `DEFAULT_ICONS`). No DOM, no Firebase. Testable in Node.
+- **`utils.js`** — pure functions (`autoAssignIcon`, `autoAssignCategoria`, `esc`, `uid`, `DEFAULT_ICONS`, `CATEGORIAS`, `CATEGORIA_ICONS`, `CATEGORIA_RULES`). No DOM, no Firebase. Testable in Node.
 - **`script.js`** — all UI logic + Firebase Firestore listeners. Global state vars: `recipes`, `week`, `extras`, `sopa`, `ingredients`, `shoppingExtra`, `shoppingDone`, `generatedFromWeek`, `weekHistory`.
 - **Firebase Firestore** — single source of truth. All writes go via `save*()` helpers; reads via `onSnapshot` listeners that call `render*()`.
 
@@ -12,7 +12,7 @@ See [PRD.md](PRD.md) for full data model and module descriptions.
 ## Build & Test
 
 ```bash
-npm test          # Jest — runs tests/utils.test.js (32 tests)
+npm test          # Jest — runs tests/utils.test.js (55 tests)
 ```
 
 No build step. Open `index.html` directly in a browser, or:
@@ -27,7 +27,8 @@ py -m http.server 8080   # Python
 - **Tests only cover `utils.js`**. DOM-dependent code in `script.js` is not unit-tested; test it manually in the browser.
 - **No framework, no transpiler.** Use ES5-compatible syntax (`var`, `function`, no arrow functions in production code) so the file loads directly without a build step.
 - **Firebase writes are fire-and-forget.** All `save*()` calls use `.catch(console.error)` — no await, no loading states.
-- **Ingredient names are the join key.** Matching across recipes, the dictionary, and the shopping list is done by `name.toLowerCase().trim()`. Never use IDs to link ingredients across collections.
+- **`ingId` is the join key.** Recipes store `{ ingId, qty }` and all lookups go through the `ingredients` dictionary. Ingredient names are still used as a fallback for legacy data during migration.
+- **`CATEGORIA_ICONS`** maps each category string to an emoji icon displayed beside ingredient names throughout the UI. Update both `CATEGORIA_ICONS` and `CATEGORIA_RULES` together when changing categories.
 - **`uid()`** generates all IDs client-side (`Date.now().toString(36) + random`).
 - **`esc()`** must wrap all user-supplied strings inserted into innerHTML.
 

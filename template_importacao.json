@@ -3,20 +3,21 @@
   "_tipos_validos": "type deve ser 'main' (prato principal) ou 'side' (sopa, sobremesa, acompanhamento)",
 
   "ingredients": [
-    "Leite",
-    "Ovos",
-    "Farinha",
-    "Azeite",
-    "Sal",
-    "Pimenta",
-    "Alho",
-    "Cebola"
+    { "name": "Leite" },
+    { "name": "Ovos" },
+    { "name": "Farinha" },
+    { "name": "Azeite" },
+    { "name": "Sal" },
+    { "name": "Pimenta" },
+    { "name": "Alho" },
+    { "name": "Cebola", "canSopa": true, "canExtra": true }
   ],
 
   "recipes": [
     {
       "name": "Esparguete a Bolonhesa",
       "type": "main",
+      "icon": "🍝",
       "ingredients": [
         { "name": "Esparguete", "qty": 200 },
         { "name": "Carne picada", "qty": 300 },
@@ -28,6 +29,7 @@
     {
       "name": "Sopa de Legumes",
       "type": "side",
+      "icon": "🥣",
       "ingredients": [
         { "name": "Cenoura", "qty": 2 },
         { "name": "Batata", "qty": 3 },

@@ -1,6 +1,6 @@
 'use strict';
 
-const { autoAssignIcon, esc, uid, DEFAULT_ICONS } = require('../utils');
+const { autoAssignIcon, esc, uid, DEFAULT_ICONS, CATEGORIAS, autoAssignCategoria } = require('../utils');
 
 // ---------------------------------------------------------------------------
 // autoAssignIcon
@@ -127,5 +127,57 @@ describe('uid', () => {
     });
     test('contains only alphanumeric characters', () => {
         expect(/^[a-z0-9]+$/i.test(uid())).toBe(true);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// CATEGORIAS
+// ---------------------------------------------------------------------------
+
+describe('CATEGORIAS', () => {
+    test('is an array of 9 strings', () => {
+        expect(Array.isArray(CATEGORIAS)).toBe(true);
+        expect(CATEGORIAS).toHaveLength(9);
+        CATEGORIAS.forEach(function(c) { expect(typeof c).toBe('string'); });
+    });
+    test('last item is "Outros"', () => {
+        expect(CATEGORIAS[CATEGORIAS.length - 1]).toBe('Outros');
+    });
+    test('no duplicate entries', () => {
+        var unique = [...new Set(CATEGORIAS)];
+        expect(unique).toHaveLength(CATEGORIAS.length);
+    });
+    test('contains Lacticínios (correct spelling)', () => {
+        expect(CATEGORIAS).toContain('Lacticínios');
+    });
+});
+
+// ---------------------------------------------------------------------------
+// autoAssignCategoria
+// ---------------------------------------------------------------------------
+
+describe('autoAssignCategoria', () => {
+    test('frango → Carne e Peixe', () => { expect(autoAssignCategoria('Frango')).toBe('Carne e Peixe'); });
+    test('salmão → Carne e Peixe (accented input)', () => { expect(autoAssignCategoria('Salmão')).toBe('Carne e Peixe'); });
+    test('bacalhau → Carne e Peixe', () => { expect(autoAssignCategoria('Bacalhau')).toBe('Carne e Peixe'); });
+    test('leite → Lacticínios', () => { expect(autoAssignCategoria('Leite')).toBe('Lacticínios'); });
+    test('queijo → Charcutaria e Queijos', () => { expect(autoAssignCategoria('Queijo')).toBe('Charcutaria e Queijos'); });
+    test('fiambre → Charcutaria e Queijos', () => { expect(autoAssignCategoria('Fiambre')).toBe('Charcutaria e Queijos'); });
+    test('chouriço → Charcutaria e Queijos (accented)', () => { expect(autoAssignCategoria('Chouriço')).toBe('Charcutaria e Queijos'); });
+    test('banana → Fruta', () => { expect(autoAssignCategoria('Banana')).toBe('Fruta'); });
+    test('esparguete → Massas e Conservas', () => { expect(autoAssignCategoria('Esparguete')).toBe('Massas e Conservas'); });
+    test('arroz → Massas e Conservas', () => { expect(autoAssignCategoria('Arroz')).toBe('Massas e Conservas'); });
+    test('pão → Pão e Sobremesas (accented)', () => { expect(autoAssignCategoria('Pão')).toBe('Pão e Sobremesas'); });
+    test('chocolate → Pão e Sobremesas', () => { expect(autoAssignCategoria('Chocolate')).toBe('Pão e Sobremesas'); });
+    test('azeite → Condimentos', () => { expect(autoAssignCategoria('Azeite')).toBe('Condimentos'); });
+    test('alho → Legumes e Vegetais', () => { expect(autoAssignCategoria('Alho')).toBe('Legumes e Vegetais'); });
+    test('cenoura → Legumes e Vegetais', () => { expect(autoAssignCategoria('Cenoura')).toBe('Legumes e Vegetais'); });
+    test('unknown → Outros', () => { expect(autoAssignCategoria('Ingrediente Misterioso')).toBe('Outros'); });
+    test('null → Outros', () => { expect(autoAssignCategoria(null)).toBe('Outros'); });
+    test('case insensitive', () => { expect(autoAssignCategoria('FRANGO')).toBe('Carne e Peixe'); });
+    test('all results are in CATEGORIAS', () => {
+        ['Frango','Leite','Fiambre','Banana','Esparguete','Pão','Azeite','Cenoura'].forEach(function(n) {
+            expect(CATEGORIAS).toContain(autoAssignCategoria(n));
+        });
     });
 });
