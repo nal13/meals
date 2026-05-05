@@ -2,20 +2,6 @@
 
 var DAYS = ['Segunda','Terca','Quarta','Quinta','Sexta','Sabado','Domingo'];
 
-// ---- Firebase ---------------------------------------------------------------
-
-firebase.initializeApp({
-    apiKey:            'AIzaSyBZeu871jiEybt8q3fam2IPVuJoq2Xhpmc',
-    authDomain:        'meal-planner-eed76.firebaseapp.com',
-    projectId:         'meal-planner-eed76',
-    storageBucket:     'meal-planner-eed76.firebasestorage.app',
-    messagingSenderId: '663930407980',
-    appId:             '1:663930407980:web:b194fd8d6ad1f4b5775589'
-});
-
-var db = firebase.firestore();
-db.enablePersistence({ synchronizeTabs: true }).catch(function () {});
-
 // ---- State ------------------------------------------------------------------
 // recipes:     { id: { name, ingredients:[{ingId,qty}], icon } }
 // week:        { '0': recipeId|null, ... }  (0-6 = dias semana)
@@ -36,84 +22,35 @@ var shoppingDone  = {};
 var generatedFromWeek = [];
 var weekHistory = [];  // last 3 snapshots, most-recent first
 var historyIdx  = 0;
+var pendingPickerDay = null;
+var _pickerFilter    = 'all';
+var _pickerQuery     = '';
+var _pickerDebounce  = null;
 
-var _loaded  = { recipes:false, week:false, extras:false, sopa:false, ingredients:false, shopping:false, history:false };
-var appReady = false;
+// ---- Storage (localStorage) -------------------------------------------------
 
-function _checkReady() {
-    if (Object.keys(_loaded).every(function(k){ return _loaded[k]; }) && !appReady) {
-        appReady = true;
-        var ov = document.getElementById('loading-overlay');
-        if (ov) ov.style.display = 'none';
-        migrateIngredientsToIngId();
-        autoCategorizeIngredients();
-        buildWeekGrid();
-        renderExtras();
-        renderSopa();
-        renderShoppingList();
-        renderRecipesTab();
-        renderHistorico();
-        // Auto-clean duplicates and fix icons silently on every load
-        setTimeout(deduplicateAndFixIconsSilent, 500);
-    }
+function _loadFromStorage() {
+    try { recipes       = JSON.parse(localStorage.getItem('mp_recipes'))    || {}; } catch(e) { recipes = {}; }
+    try { week          = JSON.parse(localStorage.getItem('mp_week'))        || {}; } catch(e) { week = {}; }
+    try { extras        = JSON.parse(localStorage.getItem('mp_extras'))      || []; } catch(e) { extras = []; }
+    try { sopa          = JSON.parse(localStorage.getItem('mp_sopa'))        || []; } catch(e) { sopa = []; }
+    try { ingredients   = JSON.parse(localStorage.getItem('mp_ingredients')) || {}; } catch(e) { ingredients = {}; }
+    var shopping;
+    try { shopping = JSON.parse(localStorage.getItem('mp_shopping')) || {}; } catch(e) { shopping = {}; }
+    shoppingExtra     = shopping.extra     || [];
+    shoppingDone      = shopping.done      || {};
+    generatedFromWeek = shopping.generated || [];
+    try { weekHistory = JSON.parse(localStorage.getItem('mp_history')) || []; } catch(e) { weekHistory = []; }
 }
 
-db.collection('recipes').onSnapshot(function(snap) {
-    snap.docChanges().forEach(function(ch) {
-        if (ch.type === 'removed') delete recipes[ch.doc.id];
-        else recipes[ch.doc.id] = ch.doc.data();
-    });
-    if (!_loaded.recipes) { _loaded.recipes = true; _checkReady(); return; }
-    if (appReady) { refreshAllSelects(); renderRecipesGrid(); }
-});
-
-db.collection('data').doc('week').onSnapshot(function(doc) {
-    week = (doc.exists && doc.data().days) ? doc.data().days : {};
-    if (!_loaded.week) { _loaded.week = true; _checkReady(); return; }
-    if (appReady) { refreshAllSelects(); }
-});
-
-db.collection('data').doc('extras').onSnapshot(function(doc) {
-    extras = (doc.exists && doc.data().list) ? doc.data().list : [];
-    if (!_loaded.extras) { _loaded.extras = true; _checkReady(); return; }
-    if (appReady) { renderExtras(); }
-});
-
-db.collection('data').doc('sopa').onSnapshot(function(doc) {
-    sopa = (doc.exists && doc.data().list) ? doc.data().list : [];
-    if (!_loaded.sopa) { _loaded.sopa = true; _checkReady(); return; }
-    if (appReady) { renderSopa(); }
-});
-
-db.collection('data').doc('ingredients').onSnapshot(function(doc) {
-    ingredients = (doc.exists && doc.data().dict) ? doc.data().dict : {};
-    if (!_loaded.ingredients) { _loaded.ingredients = true; _checkReady(); return; }
-    if (appReady) { renderIngredientsDict(); renderExtras(); renderSopa(); }
-});
-
-db.collection('data').doc('shopping').onSnapshot(function(doc) {
-    var d = doc.exists ? doc.data() : {};
-    shoppingExtra     = d.extra     || [];
-    shoppingDone      = d.done      || {};
-    generatedFromWeek = d.generated || [];
-    if (!_loaded.shopping) { _loaded.shopping = true; _checkReady(); return; }
-    if (appReady) { renderShoppingList(); }
-});
-
-db.collection('data').doc('history').onSnapshot(function(doc) {
-    weekHistory = (doc.exists && doc.data().items) ? doc.data().items : [];
-    if (!_loaded.history) { _loaded.history = true; _checkReady(); return; }
-    if (appReady) { renderHistorico(); }
-});
-
-function saveRecipe(id, data)  { db.collection('recipes').doc(id).set(data).catch(console.error); }
-function deleteRecipeDb(id)    { db.collection('recipes').doc(id).delete().catch(console.error); }
-function saveWeek(w)           { db.collection('data').doc('week').set({ days: w }).catch(console.error); }
-function saveExtras(list)      { db.collection('data').doc('extras').set({ list: list }).catch(console.error); }
-function saveSopa(list)        { db.collection('data').doc('sopa').set({ list: list }).catch(console.error); }
-function saveIngredients(dict) { db.collection('data').doc('ingredients').set({ dict: dict }).catch(console.error); }
-function saveShopping()        { db.collection('data').doc('shopping').set({ extra: shoppingExtra, done: shoppingDone, generated: generatedFromWeek }).catch(console.error); }
-function saveHistory(h)        { db.collection('data').doc('history').set({ items: h }).catch(console.error); }
+function saveRecipe(id, data)  { recipes[id] = data; localStorage.setItem('mp_recipes', JSON.stringify(recipes)); }
+function deleteRecipeDb(id)    { delete recipes[id]; localStorage.setItem('mp_recipes', JSON.stringify(recipes)); }
+function saveWeek(w)           { localStorage.setItem('mp_week', JSON.stringify(w)); }
+function saveExtras(list)      { localStorage.setItem('mp_extras', JSON.stringify(list)); }
+function saveSopa(list)        { localStorage.setItem('mp_sopa', JSON.stringify(list)); }
+function saveIngredients(dict) { localStorage.setItem('mp_ingredients', JSON.stringify(dict)); }
+function saveShopping()        { localStorage.setItem('mp_shopping', JSON.stringify({ extra: shoppingExtra, done: shoppingDone, generated: generatedFromWeek })); }
+function saveHistory(h)        { localStorage.setItem('mp_history', JSON.stringify(h)); }
 
 // uid() and esc() are defined in utils.js
 
@@ -140,16 +77,14 @@ function buildDaySlot(dayIdx) {
     var wrap = document.createElement('div');
     wrap.className = 'meal-slot';
 
-    var select = document.createElement('select');
-    select.className = 'day-select slot-select';
-    select.dataset.day = dayIdx;
-    rebuildSelectOptions(select);
-    select.value = week[dayIdx] || '';
-    select.addEventListener('change', (function(i) { return function() {
-        week[i] = select.value || null;
-        saveWeek(week); refreshDayCard(i);
+    var chooseBtn = document.createElement('button');
+    chooseBtn.className = 'btn-choose-recipe';
+    chooseBtn.dataset.day = dayIdx;
+    chooseBtn.textContent = '+ Escolher';
+    chooseBtn.addEventListener('click', (function(i) { return function() {
+        openPicker(i);
     }; })(dayIdx));
-    wrap.appendChild(select);
+    wrap.appendChild(chooseBtn);
 
     var thumb = document.createElement('span');
     thumb.className = 'slot-recipe-icon hidden';
@@ -183,46 +118,121 @@ function buildDaySlot(dayIdx) {
     return wrap;
 }
 
-function rebuildSelectOptions(select) {
-    var cur = select.value;
-    select.innerHTML = '<option value="">-- Nenhuma --</option>';
-    Object.keys(recipes)
-        .sort(function(a,b) { return recipes[a].name.localeCompare(recipes[b].name); })
-        .forEach(function(id) {
-            var opt = document.createElement('option');
-            opt.value = id; opt.textContent = recipes[id].name;
-            select.appendChild(opt);
-        });
-    select.value = cur || '';
-}
-
 function refreshAllSelects() {
-    document.querySelectorAll('.slot-select').forEach(function(s) {
-        var idx = parseInt(s.dataset.day);
-        rebuildSelectOptions(s);
-        s.value = week[idx] || '';
-    });
     DAYS.forEach(function(_, idx) { refreshDayCard(idx); });
 }
 
 function refreshDayCard(dayIdx) {
-    var rid      = week[dayIdx];
-    var select   = document.querySelector('.slot-select[data-day="'+dayIdx+'"]');
-    var link     = document.querySelector('.day-recipe-name[data-day="'+dayIdx+'"]');
-    var clearBtn = link ? link.nextElementSibling : null;
-    var thumb    = document.querySelector('.slot-recipe-icon[data-day="'+dayIdx+'"]');
+    var rid       = week[dayIdx];
+    var chooseBtn = document.querySelector('.btn-choose-recipe[data-day="'+dayIdx+'"]');
+    var link      = document.querySelector('.day-recipe-name[data-day="'+dayIdx+'"]');
+    var clearBtn  = link ? link.nextElementSibling : null;
+    var thumb     = document.querySelector('.slot-recipe-icon[data-day="'+dayIdx+'"]');
     if (rid && recipes[rid]) {
-        if (select) { select.value = rid; select.style.display = 'none'; }
+        if (chooseBtn) chooseBtn.style.display = 'none';
         if (link) link.textContent = recipes[rid].name;
         if (clearBtn) clearBtn.style.display = '';
         if (thumb) { thumb.textContent = recipes[rid].icon || '\ud83c\udf7d\ufe0f'; thumb.classList.remove('hidden'); }
     } else {
-        if (select) { select.value = ''; select.style.display = ''; }
+        if (chooseBtn) chooseBtn.style.display = '';
         if (link) link.textContent = '';
         if (clearBtn) clearBtn.style.display = 'none';
         if (thumb) thumb.classList.add('hidden');
     }
 }
+
+// ---- Recipe Picker ----------------------------------------------------------
+
+function openPicker(dayIdx) {
+    pendingPickerDay = dayIdx;
+    _pickerFilter = 'all';
+    _pickerQuery  = '';
+    document.getElementById('picker-title').textContent = 'Escolher \u2014 ' + DAYS[dayIdx];
+    document.getElementById('picker-search').value = '';
+    document.querySelectorAll('#picker-filters .filter-chip').forEach(function(btn) {
+        btn.classList.toggle('active', btn.dataset.filter === 'all');
+    });
+    renderPickerGrid('all', '');
+    document.getElementById('picker-overlay').classList.remove('hidden');
+}
+
+function closePicker() {
+    document.getElementById('picker-overlay').classList.add('hidden');
+    pendingPickerDay = null;
+}
+
+function renderPickerGrid(filter, query) {
+    var grid = document.getElementById('picker-grid');
+    var q = (query || '').trim().toLowerCase();
+    var ids = Object.keys(recipes).filter(function(id) {
+        var r = recipes[id];
+        if (!r) return false;
+        if (filter !== 'all') {
+            var type;
+            if (r.foodType && r.foodType !== 'auto') {
+                type = r.foodType;
+            } else {
+                var ingNames = (r.ingredients || []).map(function(ing) {
+                    return ingredients[ing.ingId] ? ingredients[ing.ingId].name : (ing.name || '');
+                });
+                type = getRecipeFoodType(r.name, ingNames);
+            }
+            if (type !== filter) return false;
+        }
+        if (q && r.name.toLowerCase().indexOf(q) === -1) return false;
+        return true;
+    });
+    ids.sort(function(a, b) { return recipes[a].name.localeCompare(recipes[b].name); });
+    grid.innerHTML = '';
+    if (ids.length === 0) {
+        var empty = document.createElement('p');
+        empty.className = 'picker-empty';
+        empty.textContent = 'Sem receitas nesta categoria';
+        grid.appendChild(empty);
+        return;
+    }
+    ids.forEach(function(id) {
+        var r = recipes[id];
+        var card = document.createElement('div');
+        card.className = 'recipe-card';
+        card.addEventListener('click', (function(rid) { return function() {
+            if (pendingPickerDay === null) return;
+            week[pendingPickerDay] = rid;
+            saveWeek(week);
+            refreshDayCard(pendingPickerDay);
+            closePicker();
+        }; })(id));
+        var icon = document.createElement('span');
+        icon.className = 'recipe-card-icon';
+        icon.textContent = r.icon || '\ud83c\udf7d\ufe0f';
+        var name = document.createElement('span');
+        name.className = 'recipe-card-name';
+        name.textContent = r.name;
+        card.appendChild(icon);
+        card.appendChild(name);
+        grid.appendChild(card);
+    });
+}
+
+document.getElementById('picker-close').addEventListener('click', closePicker);
+document.getElementById('picker-overlay').addEventListener('click', function(e) {
+    if (e.target === this) closePicker();
+});
+document.getElementById('picker-search').addEventListener('input', function() {
+    _pickerQuery = this.value;
+    clearTimeout(_pickerDebounce);
+    var q = _pickerQuery;
+    _pickerDebounce = setTimeout(function() { renderPickerGrid(_pickerFilter, q); }, 200);
+});
+document.getElementById('picker-filters').addEventListener('click', function(e) {
+    var chip = e.target.closest('.filter-chip');
+    if (!chip) return;
+    _pickerFilter = chip.dataset.filter;
+    document.querySelectorAll('#picker-filters .filter-chip').forEach(function(btn) {
+        btn.classList.toggle('active', btn === chip);
+    });
+    renderPickerGrid(_pickerFilter, _pickerQuery);
+});
 
 // ---- Extras (ingredient-based) -----------------------------------------------
 
@@ -248,11 +258,6 @@ function getIngCategoriaByName(name) {
         return ingredients[iid].name.toLowerCase() === key;
     });
     return (id && ingredients[id].categoria) ? ingredients[id].categoria : 'Outros';
-}
-
-function getCatIcon(ingId, ingName) {
-    var cat = ingId ? getIngCategoria(ingId) : getIngCategoriaByName(ingName || '');
-    return CATEGORIA_ICONS[cat] || CATEGORIA_ICONS['Outros'];
 }
 
 function resolveIngNames(ings) {
@@ -380,17 +385,9 @@ function renderShoppingList() {
 
         var left = document.createElement('div');
         left.className = 'shop-item-left';
-        var nameLine = document.createElement('div');
-        nameLine.className = 'ing-name-line';
-        var iconEl = document.createElement('span');
-        iconEl.className = 'ing-cat-badge';
-        iconEl.textContent = getCatIcon(item.ingId, item.name);
-        iconEl.title = item.ingId ? getIngCategoria(item.ingId) : getIngCategoriaByName(item.name);
         var nameEl = document.createElement('span');
         nameEl.className = 'shop-item-name'; nameEl.textContent = item.name;
-        nameLine.appendChild(iconEl);
-        nameLine.appendChild(nameEl);
-        left.appendChild(nameLine);
+        left.appendChild(nameEl);
 
         var right = document.createElement('div');
         right.className = 'shop-item-right';
@@ -556,18 +553,7 @@ function renderRecipesGrid() {
             ul.className = 'recipe-detail-ings';
             r.ingredients.forEach(function(ing) {
                 var li = document.createElement('li');
-                var ingName = getIngName(ing.ingId) || ing.name || '';
-                var liLine = document.createElement('span');
-                liLine.className = 'ing-name-line';
-                var liIcon = document.createElement('span');
-                liIcon.className = 'ing-cat-badge';
-                liIcon.textContent = getCatIcon(ing.ingId, ingName);
-                liIcon.title = getIngCategoria(ing.ingId || '');
-                var liName = document.createElement('span');
-                liName.textContent = ingName + (ing.qty ? ' — ' + ing.qty : '');
-                liLine.appendChild(liIcon);
-                liLine.appendChild(liName);
-                li.appendChild(liLine);
+                li.textContent = (getIngName(ing.ingId) || ing.name || '') + (ing.qty ? ' — ' + ing.qty : '');
                 ul.appendChild(li);
             });
             detail.appendChild(ul);
@@ -678,18 +664,10 @@ function renderGerarModal() {
         var left = document.createElement('div');
         left.className = 'gerar-ing-left';
 
-        var nameLine = document.createElement('div');
-        nameLine.className = 'ing-name-line';
-        var iconEl = document.createElement('span');
-        iconEl.className = 'ing-cat-badge';
-        iconEl.textContent = getCatIcon(item.ingId, item.name);
-        iconEl.title = item.ingId ? getIngCategoria(item.ingId) : getIngCategoriaByName(item.name);
         var nameEl = document.createElement('span');
         nameEl.className = 'gerar-ing-name';
         nameEl.textContent = item.name;
-        nameLine.appendChild(iconEl);
-        nameLine.appendChild(nameEl);
-        left.appendChild(nameLine);
+        left.appendChild(nameEl);
 
         if (item.sources && item.sources.length) {
             var srcEl = document.createElement('span');
@@ -859,16 +837,7 @@ function renderHistorico() {
         entry.lista.forEach(function(item) {
             var li = document.createElement('li');
             li.className = 'hist-lista-item';
-            var ns = document.createElement('span');
-            ns.className = 'ing-name-line';
-            var nsIcon = document.createElement('span');
-            nsIcon.className = 'ing-cat-badge';
-            nsIcon.textContent = getCatIcon(null, item.name);
-            nsIcon.title = getIngCategoriaByName(item.name);
-            var nsName = document.createElement('span');
-            nsName.textContent = item.name;
-            ns.appendChild(nsIcon);
-            ns.appendChild(nsName);
+            var ns = document.createElement('span'); ns.textContent = item.name;
             var qs = document.createElement('span'); qs.className = 'hist-lista-qty';
             qs.textContent = item.qty || '';
             li.appendChild(ns); li.appendChild(qs);
@@ -928,18 +897,16 @@ function buildIngDictRow(id) {
 
     var left = document.createElement('div');
     left.className = 'ing-dict-row-left';
-    var nameLine = document.createElement('div');
-    nameLine.className = 'ing-name-line';
-    var catBadge = document.createElement('span');
-    catBadge.className = 'ing-cat-badge';
-    catBadge.textContent = getCatIcon(id, ingredients[id].name);
-    catBadge.title = ingredients[id].categoria || 'Outros';
     var nameEl = document.createElement('span');
     nameEl.className = 'ing-dict-name';
     nameEl.textContent = ingredients[id].name;
-    nameLine.appendChild(catBadge);
-    nameLine.appendChild(nameEl);
-    left.appendChild(nameLine);
+    left.appendChild(nameEl);
+    var catBadge = document.createElement('span');
+    catBadge.className = 'ing-cat-badge';
+    var ingCat = ingredients[id].categoria || 'Outros';
+    catBadge.textContent = CATEGORIA_ICONS[ingCat] || '🛒';
+    catBadge.title = ingCat;
+    left.appendChild(catBadge);
     if (usedIn.length) {
         var usageEl = document.createElement('span');
         usageEl.className = 'ing-dict-usage';
@@ -1132,6 +1099,7 @@ function openAddModal(rid) {
     delBtn.classList.toggle('hidden', !rid);
     delBtn.dataset.rid = rid || '';
     document.getElementById('recipe-name-input').value = rid ? recipes[rid].name : '';
+    document.getElementById('recipe-food-type').value = (rid && recipes[rid].foodType) ? recipes[rid].foodType : 'auto';
     document.getElementById('ingredients-list').innerHTML = '';
     renderIconPicker(pendingIcon);
     document.getElementById('icon-custom-input').value = DEFAULT_ICONS.indexOf(pendingIcon) === -1 ? pendingIcon : '';
@@ -1237,7 +1205,9 @@ document.getElementById('modal-save').addEventListener('click', function() {
     });
     if (ingDictChanged) saveIngredients(ingredients);
     var id = editingId || uid();
+    var foodTypeVal = document.getElementById('recipe-food-type').value;
     recipes[id] = { name: name, ingredients: ings, icon: pendingIcon || DEFAULT_ICONS[0] };
+    if (foodTypeVal && foodTypeVal !== 'auto') recipes[id].foodType = foodTypeVal;
     saveRecipe(id, recipes[id]);
     closeModal(); refreshAllSelects(); renderRecipesGrid();
 });
@@ -1269,22 +1239,7 @@ function openViewModal(rid) {
         ul.className = 'view-ingredient-list';
         r.ingredients.forEach(function(ing) {
             var li = document.createElement('li');
-            var ingName = getIngName(ing.ingId) || ing.name || '';
-            var liLeft = document.createElement('span');
-            liLeft.className = 'ing-name-line';
-            var liIcon = document.createElement('span');
-            liIcon.className = 'ing-cat-badge';
-            liIcon.textContent = getCatIcon(ing.ingId, ingName);
-            liIcon.title = getIngCategoria(ing.ingId || '');
-            var liName = document.createElement('span');
-            liName.textContent = ingName;
-            liLeft.appendChild(liIcon);
-            liLeft.appendChild(liName);
-            var liQty = document.createElement('span');
-            liQty.className = 'view-ingredient-qty';
-            liQty.textContent = ing.qty;
-            li.appendChild(liLeft);
-            li.appendChild(liQty);
+            li.innerHTML = '<span>' + esc(getIngName(ing.ingId) || ing.name || '') + '</span><span class="view-ingredient-qty">' + esc(ing.qty) + '</span>';
             ul.appendChild(li);
         });
         body.appendChild(ul);
@@ -1331,23 +1286,14 @@ function exportData() {
     var data = {
         ingredients: Object.keys(ingredients)
             .sort(function(a,b){ return ingredients[a].name.localeCompare(ingredients[b].name); })
-            .map(function(id){
-                var ing = ingredients[id];
-                var obj = { name: ing.name };
-                if (ing.canSopa)   obj.canSopa   = true;
-                if (ing.canExtra)  obj.canExtra  = true;
-                if (ing.categoria) obj.categoria = ing.categoria;
-                return obj;
-            }),
+            .map(function(id){ return ingredients[id].name; }),
         recipes: Object.keys(recipes)
             .sort(function(a,b){ return recipes[a].name.localeCompare(recipes[b].name); })
             .map(function(id){
-                var rec = recipes[id];
                 return {
-                    name: rec.name,
-                    type: rec.type || 'main',
-                    icon: rec.icon || '',
-                    ingredients: (rec.ingredients || []).map(function(i){
+                    name: recipes[id].name,
+                    type: recipes[id].type || 'main',
+                    ingredients: (recipes[id].ingredients || []).map(function(i){
                         return { name: i.ingId ? getIngName(i.ingId) : (i.name || ''), qty: i.qty };
                     })
                 };
@@ -1386,32 +1332,21 @@ var importOverlay  = document.getElementById('import-overlay');
 var importData     = null; // { ingredients: [{name, isNew, mappedTo}], recipes: [{...}] }
 
 function openImportModal(raw) {
-    // Parse raw JSON into importData — supports both string[] and object[] for ingredients
-    var rawIngs = Array.isArray(raw.ingredients) ? raw.ingredients.filter(function(n){
-        return (typeof n === 'string' && n.trim()) || (n && typeof n === 'object' && n.name && String(n.name).trim());
-    }) : [];
+    // Parse raw JSON into importData
+    var rawIngs     = Array.isArray(raw.ingredients) ? raw.ingredients.filter(function(n){ return typeof n === 'string' && n.trim(); }) : [];
     var rawRecipes  = Array.isArray(raw.recipes)     ? raw.recipes : [];
 
     // Build import state
     importData = {
         ingredients: rawIngs.map(function(n) {
-            var name, canSopa, canExtra, categoria;
-            if (typeof n === 'string') {
-                name = n.trim(); canSopa = false; canExtra = false; categoria = null;
-            } else {
-                name = String(n.name || '').trim();
-                canSopa   = !!n.canSopa;
-                canExtra  = !!n.canExtra;
-                categoria = n.categoria || null;
-            }
+            var name = n.trim();
             var existId = Object.keys(ingredients).find(function(id){ return ingredients[id].name.toLowerCase() === name.toLowerCase(); });
-            return { name: name, canSopa: canSopa, canExtra: canExtra, categoria: categoria, isNew: !existId, mappedTo: existId || null, deleted: false };
+            return { name: name, isNew: !existId, mappedTo: existId || null, deleted: false };
         }),
         recipes: rawRecipes.map(function(r) {
             return {
                 name:  (r.name  || '').trim(),
                 type:  (r.type === 'side' ? 'side' : 'main'),
-                icon:  (r.icon  || ''),
                 ingredients: Array.isArray(r.ingredients) ? r.ingredients.map(function(i){
                     return { name: (i.name||'').trim(), qty: String(i.qty||'0'), deleted: false };
                 }) : [],
@@ -1569,14 +1504,7 @@ document.getElementById('import-confirm').addEventListener('click', function() {
     importData.ingredients.filter(function(i){ return !i.deleted; }).forEach(function(item) {
         if (item.mappedTo) return; // maps to existing, no new entry
         var exists = Object.keys(ingredients).find(function(id){ return ingredients[id].name.toLowerCase() === item.name.toLowerCase(); });
-        if (!exists) {
-            var newIng = { name: item.name };
-            if (item.canSopa)   newIng.canSopa   = true;
-            if (item.canExtra)  newIng.canExtra  = true;
-            if (item.categoria) newIng.categoria = item.categoria;
-            ingredients[uid()] = newIng;
-            count.ing++;
-        }
+        if (!exists) { ingredients[uid()] = { name: item.name }; count.ing++; }
     });
     if (count.ing) saveIngredients(ingredients);
 
@@ -1601,8 +1529,7 @@ document.getElementById('import-confirm').addEventListener('click', function() {
             return { ingId: ingId, qty: i.qty };
         });
         var id = uid();
-        var recIcon = rec.icon || autoAssignIcon(rec.name, ings.map(function(i){ return { name: getIngName(i.ingId) }; })) || DEFAULT_ICONS[0];
-        recipes[id] = { name: rec.name, type: rec.type, ingredients: ings, icon: recIcon };
+        recipes[id] = { name: rec.name, type: rec.type, ingredients: ings, icon: DEFAULT_ICONS[0] };
         saveRecipe(id, recipes[id]); count.rec++;
     });
     if (ingChanged2) saveIngredients(ingredients);
@@ -1705,7 +1632,7 @@ function _runDedup(silent) {
 function deduplicateAndFixIcons() { _runDedup(false); }
 function deduplicateAndFixIconsSilent() { _runDedup(true); }
 
-// ---- Init (triggered by Firestore via _checkReady) --------------------------
+// ---- Init -------------------------------------------------------------------
 
 function autoCategorizeIngredients() {
     if (localStorage.getItem('categoriaMigrated')) return; // already ran once
@@ -1753,3 +1680,17 @@ function migrateIngredientsToIngId() {
         console.log('[migrate] migrated ' + recipesToSave.length + ' recipe(s) to ingId format');
     }
 }
+
+// ---- Bootstrap --------------------------------------------------------------
+
+_loadFromStorage();
+migrateIngredientsToIngId();
+autoCategorizeIngredients();
+buildWeekGrid();
+renderExtras();
+renderSopa();
+renderShoppingList();
+renderRecipesTab();
+renderHistorico();
+setTimeout(deduplicateAndFixIconsSilent, 500);
+document.getElementById('loading-overlay').style.display = 'none';

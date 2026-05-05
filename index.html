@@ -164,6 +164,14 @@
             <label>Nome da receita
                 <input type="text" id="recipe-name-input" placeholder="ex: Esparguete a Bolonhesa">
             </label>
+            <label>Categoria
+                <select id="recipe-food-type" style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:.4rem .6rem;font-size:.875rem;color:var(--text);outline:none;width:100%">
+                    <option value="auto">🔄 Automático (detectar pelo nome/ingredientes)</option>
+                    <option value="peixe">🐟 Peixe</option>
+                    <option value="carne">🥩 Carne</option>
+                    <option value="vegetariano">🥦 Vegetariano</option>
+                </select>
+            </label>
             <div>
                 <div class="icon-picker-label">
                     <span class="field-label">Ícone</span>
@@ -205,6 +213,27 @@
             <button class="btn-soft-danger" id="view-delete">Apagar</button>
             <button class="btn-primary" id="view-close-btn">Fechar</button>
         </div>
+    </div>
+</div>
+
+<!-- Modal Picker de Refeição (bottom-sheet) -->
+<div class="modal-overlay hidden" id="picker-overlay">
+    <div class="picker-sheet">
+        <div class="picker-handle"></div>
+        <div class="picker-header">
+            <span id="picker-title">Escolher refeição</span>
+            <button class="modal-close" id="picker-close">&#x2715;</button>
+        </div>
+        <div class="picker-controls">
+            <input type="search" id="picker-search" class="picker-search" placeholder="Pesquisar receita…" autocomplete="off">
+            <div class="picker-filters" id="picker-filters">
+                <button class="filter-chip active" data-filter="all">Todas</button>
+                <button class="filter-chip" data-filter="peixe">🐟 Peixe</button>
+                <button class="filter-chip" data-filter="carne">🥩 Carne</button>
+                <button class="filter-chip" data-filter="vegetariano">🥦 Vegetariano</button>
+            </div>
+        </div>
+        <div id="picker-grid" class="picker-grid"></div>
     </div>
 </div>
 
@@ -258,8 +287,6 @@
     </button>
 </nav>
 
-<script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-firestore-compat.js"></script>
 <script src="utils.js"></script>
 <script src="script.js"></script>
 <script>
