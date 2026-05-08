@@ -208,6 +208,27 @@
     </div>
 </div>
 
+<!-- Modal Picker de Receita (bottom-sheet) -->
+<div class="modal-overlay hidden" id="picker-overlay">
+    <div class="picker-sheet">
+        <div class="picker-handle"></div>
+        <div class="picker-header">
+            <span id="picker-title">Escolher refeição</span>
+            <button class="modal-close" id="picker-close">&#x2715;</button>
+        </div>
+        <div class="picker-controls">
+            <input type="search" id="picker-search" class="picker-search" placeholder="Pesquisar receita…" autocomplete="off">
+            <div class="picker-filters" id="picker-filters">
+                <button class="filter-chip active" data-filter="all">Todas</button>
+                <button class="filter-chip" data-filter="peixe">🐟 Peixe</button>
+                <button class="filter-chip" data-filter="carne">🍗 Carne</button>
+                <button class="filter-chip" data-filter="vegetariano">🥦 Vegetariano</button>
+            </div>
+        </div>
+        <div id="picker-grid" class="picker-grid"></div>
+    </div>
+</div>
+
 <!-- Modal Importar JSON -->
 <div class="modal-overlay hidden" id="import-overlay">
     <div class="modal modal-wide">

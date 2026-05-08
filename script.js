@@ -36,6 +36,10 @@ var shoppingDone  = {};
 var generatedFromWeek = [];
 var weekHistory = [];  // last 3 snapshots, most-recent first
 var historyIdx  = 0;
+var pendingPickerDay = null;
+var _pickerFilter    = 'all';
+var _pickerQuery     = '';
+var _pickerDebounce  = null;
 
 var _loaded  = { recipes:false, week:false, extras:false, sopa:false, ingredients:false, shopping:false, history:false };
 var appReady = false;
@@ -140,16 +144,14 @@ function buildDaySlot(dayIdx) {
     var wrap = document.createElement('div');
     wrap.className = 'meal-slot';
 
-    var select = document.createElement('select');
-    select.className = 'day-select slot-select';
-    select.dataset.day = dayIdx;
-    rebuildSelectOptions(select);
-    select.value = week[dayIdx] || '';
-    select.addEventListener('change', (function(i) { return function() {
-        week[i] = select.value || null;
-        saveWeek(week); refreshDayCard(i);
+    var chooseBtn = document.createElement('button');
+    chooseBtn.className = 'btn-choose-recipe';
+    chooseBtn.dataset.day = dayIdx;
+    chooseBtn.textContent = '+ Escolher';
+    chooseBtn.addEventListener('click', (function(i) { return function() {
+        openPicker(i);
     }; })(dayIdx));
-    wrap.appendChild(select);
+    wrap.appendChild(chooseBtn);
 
     var thumb = document.createElement('span');
     thumb.className = 'slot-recipe-icon hidden';
@@ -183,46 +185,121 @@ function buildDaySlot(dayIdx) {
     return wrap;
 }
 
-function rebuildSelectOptions(select) {
-    var cur = select.value;
-    select.innerHTML = '<option value="">-- Nenhuma --</option>';
-    Object.keys(recipes)
-        .sort(function(a,b) { return recipes[a].name.localeCompare(recipes[b].name); })
-        .forEach(function(id) {
-            var opt = document.createElement('option');
-            opt.value = id; opt.textContent = recipes[id].name;
-            select.appendChild(opt);
-        });
-    select.value = cur || '';
-}
-
 function refreshAllSelects() {
-    document.querySelectorAll('.slot-select').forEach(function(s) {
-        var idx = parseInt(s.dataset.day);
-        rebuildSelectOptions(s);
-        s.value = week[idx] || '';
-    });
     DAYS.forEach(function(_, idx) { refreshDayCard(idx); });
 }
 
 function refreshDayCard(dayIdx) {
-    var rid      = week[dayIdx];
-    var select   = document.querySelector('.slot-select[data-day="'+dayIdx+'"]');
-    var link     = document.querySelector('.day-recipe-name[data-day="'+dayIdx+'"]');
-    var clearBtn = link ? link.nextElementSibling : null;
-    var thumb    = document.querySelector('.slot-recipe-icon[data-day="'+dayIdx+'"]');
+    var rid       = week[dayIdx];
+    var chooseBtn = document.querySelector('.btn-choose-recipe[data-day="'+dayIdx+'"]');
+    var link      = document.querySelector('.day-recipe-name[data-day="'+dayIdx+'"]');
+    var clearBtn  = link ? link.nextElementSibling : null;
+    var thumb     = document.querySelector('.slot-recipe-icon[data-day="'+dayIdx+'"]');
     if (rid && recipes[rid]) {
-        if (select) { select.value = rid; select.style.display = 'none'; }
+        if (chooseBtn) chooseBtn.style.display = 'none';
         if (link) link.textContent = recipes[rid].name;
         if (clearBtn) clearBtn.style.display = '';
         if (thumb) { thumb.textContent = recipes[rid].icon || '\ud83c\udf7d\ufe0f'; thumb.classList.remove('hidden'); }
     } else {
-        if (select) { select.value = ''; select.style.display = ''; }
+        if (chooseBtn) chooseBtn.style.display = '';
         if (link) link.textContent = '';
         if (clearBtn) clearBtn.style.display = 'none';
         if (thumb) thumb.classList.add('hidden');
     }
 }
+
+// ---- Recipe Picker ----------------------------------------------------------
+
+function openPicker(dayIdx) {
+    pendingPickerDay = dayIdx;
+    _pickerFilter = 'all';
+    _pickerQuery  = '';
+    document.getElementById('picker-title').textContent = 'Escolher \u2014 ' + DAYS[dayIdx];
+    document.getElementById('picker-search').value = '';
+    document.querySelectorAll('#picker-filters .filter-chip').forEach(function(btn) {
+        btn.classList.toggle('active', btn.dataset.filter === 'all');
+    });
+    renderPickerGrid('all', '');
+    document.getElementById('picker-overlay').classList.remove('hidden');
+}
+
+function closePicker() {
+    document.getElementById('picker-overlay').classList.add('hidden');
+    pendingPickerDay = null;
+}
+
+function renderPickerGrid(filter, query) {
+    var grid = document.getElementById('picker-grid');
+    var q = (query || '').trim().toLowerCase();
+    var ids = Object.keys(recipes).filter(function(id) {
+        var r = recipes[id];
+        if (!r) return false;
+        if (filter !== 'all') {
+            var type;
+            if (r.foodType && r.foodType !== 'auto') {
+                type = r.foodType;
+            } else {
+                var ingNames = (r.ingredients || []).map(function(ing) {
+                    return ingredients[ing.ingId] ? ingredients[ing.ingId].name : (ing.name || '');
+                });
+                type = getRecipeFoodType(r.name, ingNames);
+            }
+            if (type !== filter) return false;
+        }
+        if (q && r.name.toLowerCase().indexOf(q) === -1) return false;
+        return true;
+    });
+    ids.sort(function(a, b) { return recipes[a].name.localeCompare(recipes[b].name); });
+    grid.innerHTML = '';
+    if (ids.length === 0) {
+        var empty = document.createElement('p');
+        empty.className = 'picker-empty';
+        empty.textContent = 'Sem receitas nesta categoria';
+        grid.appendChild(empty);
+        return;
+    }
+    ids.forEach(function(id) {
+        var r = recipes[id];
+        var card = document.createElement('div');
+        card.className = 'recipe-card';
+        card.addEventListener('click', (function(rid) { return function() {
+            if (pendingPickerDay === null) return;
+            week[pendingPickerDay] = rid;
+            saveWeek(week);
+            refreshDayCard(pendingPickerDay);
+            closePicker();
+        }; })(id));
+        var icon = document.createElement('span');
+        icon.className = 'recipe-card-icon';
+        icon.textContent = r.icon || '\ud83c\udf7d\ufe0f';
+        var name = document.createElement('span');
+        name.className = 'recipe-card-name';
+        name.textContent = r.name;
+        card.appendChild(icon);
+        card.appendChild(name);
+        grid.appendChild(card);
+    });
+}
+
+document.getElementById('picker-close').addEventListener('click', closePicker);
+document.getElementById('picker-overlay').addEventListener('click', function(e) {
+    if (e.target === this) closePicker();
+});
+document.getElementById('picker-search').addEventListener('input', function() {
+    _pickerQuery = this.value;
+    clearTimeout(_pickerDebounce);
+    var q = _pickerQuery;
+    _pickerDebounce = setTimeout(function() { renderPickerGrid(_pickerFilter, q); }, 200);
+});
+document.getElementById('picker-filters').addEventListener('click', function(e) {
+    var chip = e.target.closest('.filter-chip');
+    if (!chip) return;
+    _pickerFilter = chip.dataset.filter;
+    document.querySelectorAll('#picker-filters .filter-chip').forEach(function(btn) {
+        btn.classList.toggle('active', btn === chip);
+    });
+    renderPickerGrid(_pickerFilter, _pickerQuery);
+});
 
 // ---- Extras (ingredient-based) -----------------------------------------------
 
