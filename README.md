@@ -8,8 +8,8 @@ Aplicação web PWA para planear refeições semanais, gerir receitas e gerar li
 
 ### 📅 Semana
 - Grelha com os 7 dias da semana
-- Cada dia tem dois slots: **Prato Principal** e **Sopa/Acompanhamento**
-- Dropdown para selecionar a receita em cada slot
+- Cada dia tem um slot de refeição
+- Botão **+ Escolher** abre um picker com pesquisa e filtros (Peixe / Carne / Vegetariano)
 - Botão para remover a refeição do slot
 - Clicar no nome da receita abre o modal de visualização
 
@@ -59,19 +59,21 @@ Aplicação web PWA para planear refeições semanais, gerir receitas e gerar li
 | Componente | Detalhe |
 |---|---|
 | Frontend | HTML + CSS + JavaScript (vanilla, sem frameworks) |
-| Base de dados | **Firebase Firestore** (sincronização em tempo real) |
-| Offline | Service Worker + Firestore persistence |
+| Persistência | **localStorage** (por browser/dispositivo) |
+| Offline | Service Worker (cache completo) |
+| Hosting | GitHub Pages (estático, sem servidor) |
 | PWA | Instalável no ecrã inicial (Android e iOS) |
 
-### Coleções Firebase
-| Coleção / Documento | Conteúdo |
+### Chaves localStorage
+| Chave | Conteúdo |
 |---|---|
-| `recipes/{id}` | `{ name, type, ingredients:[{name,qty}], image }` |
-| `data/week` | `{ days: { '0': {main,side}, ... } }` (0=Segunda … 6=Domingo) |
-| `data/extras` | `{ list: [{id, main, side}] }` |
-| `data/ingredients` | `{ dict: { id: {name} } }` |
-| `data/shopping` | `{ extra:[{id,name,qty}], done:{key:true} }` |
-| `data/history` | `{ records: [{id,date,week,extras}] }` (máx. 30) |
+| `mp_recipes` | `{ id: { name, icon, ingredients:[{ingId,qty}] } }` |
+| `mp_week` | `{ '0': recipeId\|null, … }` (0=Segunda … 6=Domingo) |
+| `mp_extras` | `[{ id, ingId, qty }]` |
+| `mp_sopa` | `[{ id, ingId, qty }]` |
+| `mp_ingredients` | `{ id: { name, categoria, canSopa, canExtra } }` |
+| `mp_shopping` | `{ extra:[…], done:{…}, generated:[…] }` |
+| `mp_history` | `[{ date, week, lista }]` (máx. 3) |
 
 ---
 
@@ -91,10 +93,9 @@ node -e "require('http').createServer((req,res)=>{require('fs').readFile('.'+req
 ```
 Depois abre `http://localhost:8080` no browser ou `http://[IP-do-computador]:8080` no telemóvel (mesma rede WiFi).
 
-### Hospedar online grátis (Netlify)
-1. Vai a [netlify.com](https://netlify.com) e cria conta gratuita
-2. Arrasta a pasta `meal-planner` para o painel do Netlify
-3. Fica online com um link `https://xxxx.netlify.app`
+### GitHub Pages
+O repositório está configurado para publicar automaticamente via GitHub Pages.
+A app fica disponível em `https://nunogouveia91.github.io/meal-planner/`.
 
 ---
 
@@ -104,7 +105,7 @@ meal-planner/
 ├── index.html                — estrutura da página
 ├── style.css                 — estilos visuais + responsivo mobile
 ├── utils.js                  — funções puras (autoAssignIcon, esc, uid)
-├── script.js                 — lógica completa da aplicação + Firebase
+├── script.js                 — lógica completa da aplicação (localStorage)
 ├── manifest.json             — configuração PWA
 ├── sw.js                     — Service Worker (cache offline)
 ├── icon-192.png              — ícone PWA 192×192
@@ -112,7 +113,7 @@ meal-planner/
 ├── generate-icons.py         — script para regenerar os ícones PNG
 ├── rebuild.py                — utilitário de build
 ├── template_importacao.json  — template para importar receitas
-├── tests/utils.test.js       — testes Jest (32 testes)
+├── tests/utils.test.js       — testes Jest (62 testes)
 ├── package.json              — dependências de desenvolvimento (Jest)
 ├── AGENTS.md                 — guia para agentes AI
 ├── PRD.md                    — product requirements document
@@ -127,7 +128,7 @@ meal-planner/
 - Impede zoom automático do iOS nos inputs
 - Suporte a safe-area-inset (notch do iPhone)
 - Instalável no ecrã inicial (Android Chrome e iOS Safari)
-- **Sincronização automática** entre dispositivos via Firebase
+- Dados guardados por browser via `localStorage`
 
 ---
 

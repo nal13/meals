@@ -1,6 +1,6 @@
 'use strict';
 
-const { autoAssignIcon, esc, uid, DEFAULT_ICONS, CATEGORIAS, autoAssignCategoria } = require('../utils');
+const { autoAssignIcon, esc, uid, DEFAULT_ICONS, CATEGORIAS, autoAssignCategoria, getRecipeFoodType } = require('../utils');
 
 // ---------------------------------------------------------------------------
 // autoAssignIcon
@@ -161,9 +161,9 @@ describe('autoAssignCategoria', () => {
     test('salmão → Carne e Peixe (accented input)', () => { expect(autoAssignCategoria('Salmão')).toBe('Carne e Peixe'); });
     test('bacalhau → Carne e Peixe', () => { expect(autoAssignCategoria('Bacalhau')).toBe('Carne e Peixe'); });
     test('leite → Lacticínios', () => { expect(autoAssignCategoria('Leite')).toBe('Lacticínios'); });
-    test('queijo → Charcutaria e Queijos', () => { expect(autoAssignCategoria('Queijo')).toBe('Charcutaria e Queijos'); });
-    test('fiambre → Charcutaria e Queijos', () => { expect(autoAssignCategoria('Fiambre')).toBe('Charcutaria e Queijos'); });
-    test('chouriço → Charcutaria e Queijos (accented)', () => { expect(autoAssignCategoria('Chouriço')).toBe('Charcutaria e Queijos'); });
+    test('queijo → Lacticínios', () => { expect(autoAssignCategoria('Queijo')).toBe('Lacticínios'); });
+    test('fiambre → Charcutaria', () => { expect(autoAssignCategoria('Fiambre')).toBe('Charcutaria'); });
+    test('chouriço → Charcutaria (accented)', () => { expect(autoAssignCategoria('Chouriço')).toBe('Charcutaria'); });
     test('banana → Fruta', () => { expect(autoAssignCategoria('Banana')).toBe('Fruta'); });
     test('esparguete → Massas e Conservas', () => { expect(autoAssignCategoria('Esparguete')).toBe('Massas e Conservas'); });
     test('arroz → Massas e Conservas', () => { expect(autoAssignCategoria('Arroz')).toBe('Massas e Conservas'); });
@@ -181,3 +181,32 @@ describe('autoAssignCategoria', () => {
         });
     });
 });
+
+// ---------------------------------------------------------------------------
+// getRecipeFoodType
+// ---------------------------------------------------------------------------
+
+describe('getRecipeFoodType', () => {
+    test('salmon name → peixe', () => {
+        expect(getRecipeFoodType('Salmao com Legumes', [])).toBe('peixe');
+    });
+    test('frango name with ingredients → carne', () => {
+        expect(getRecipeFoodType('Frango Assado', ['frango', 'alho', 'limao'])).toBe('carne');
+    });
+    test('vegetarian recipe → vegetariano', () => {
+        expect(getRecipeFoodType('Salada de Grao', ['grao', 'tomate', 'cebola'])).toBe('vegetariano');
+    });
+    test('carne picada in ingredients → carne', () => {
+        expect(getRecipeFoodType('Esparguete Bolonhesa', ['carne picada', 'tomate', 'cebola'])).toBe('carne');
+    });
+    test('empty name and empty ingredients → vegetariano', () => {
+        expect(getRecipeFoodType('', [])).toBe('vegetariano');
+    });
+    test('peixe takes priority over carne', () => {
+        expect(getRecipeFoodType('Salmao com Bacon', ['salmon', 'bacon'])).toBe('peixe');
+    });
+    test('bacalhau → peixe', () => {
+        expect(getRecipeFoodType('Bacalhau com Natas', ['bacalhau', 'natas', 'cebola'])).toBe('peixe');
+    });
+});
+
