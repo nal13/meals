@@ -1,6 +1,6 @@
 'use strict';
 
-const { autoAssignIcon, esc, uid, DEFAULT_ICONS, CATEGORIAS, autoAssignCategoria, getRecipeFoodType } = require('../utils');
+const { autoAssignIcon, esc, uid, DEFAULT_ICONS, CATEGORIAS, autoAssignCategoria, getRecipeFoodType, getEnSynonym } = require('../utils');
 
 // ---------------------------------------------------------------------------
 // autoAssignIcon
@@ -180,6 +180,12 @@ describe('autoAssignCategoria', () => {
             expect(CATEGORIAS).toContain(autoAssignCategoria(n));
         });
     });
+    // EN ingredient names (bilingual regex coverage)
+    test('Chicken → Carne e Peixe', () => { expect(autoAssignCategoria('Chicken')).toBe('Carne e Peixe'); });
+    test('Salmon → Carne e Peixe', () => { expect(autoAssignCategoria('Salmon')).toBe('Carne e Peixe'); });
+    test('Milk → Lacticínios', () => { expect(autoAssignCategoria('Milk')).toBe('Lacticínios'); });
+    test('Cheese → Lacticínios', () => { expect(autoAssignCategoria('Cheese')).toBe('Lacticínios'); });
+    test('Bread → Pão e Sobremesas', () => { expect(autoAssignCategoria('Bread')).toBe('Pão e Sobremesas'); });
 });
 
 // ---------------------------------------------------------------------------
@@ -210,3 +216,23 @@ describe('getRecipeFoodType', () => {
     });
 });
 
+// ---------------------------------------------------------------------------
+// getEnSynonym
+// ---------------------------------------------------------------------------
+
+describe('getEnSynonym', () => {
+    test('frango → Chicken (PT)', () => { expect(getEnSynonym('Frango')).toBe('Chicken'); });
+    test('salmão → Salmon (accented PT)', () => { expect(getEnSynonym('Salmão')).toBe('Salmon'); });
+    test('bacalhau → Cod', () => { expect(getEnSynonym('Bacalhau')).toBe('Cod'); });
+    test('leite → Milk', () => { expect(getEnSynonym('Leite')).toBe('Milk'); });
+    test('queijo → Cheese', () => { expect(getEnSynonym('Queijo')).toBe('Cheese'); });
+    test('cenoura → Carrot', () => { expect(getEnSynonym('Cenoura')).toBe('Carrot'); });
+    test('arroz → Rice', () => { expect(getEnSynonym('Arroz')).toBe('Rice'); });
+    test('azeite → Olive Oil', () => { expect(getEnSynonym('Azeite')).toBe('Olive Oil'); });
+    test('chicken (already EN) → Chicken', () => { expect(getEnSynonym('Chicken')).toBe('Chicken'); });
+    test('salmon (already EN) → Salmon', () => { expect(getEnSynonym('Salmon')).toBe('Salmon'); });
+    test('case-insensitive', () => { expect(getEnSynonym('FRANGO')).toBe('Chicken'); });
+    test('unknown → null', () => { expect(getEnSynonym('Ingrediente Misterioso')).toBeNull(); });
+    test('null → null', () => { expect(getEnSynonym(null)).toBeNull(); });
+    test('empty string → null', () => { expect(getEnSynonym('')).toBeNull(); });
+});

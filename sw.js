@@ -1,6 +1,6 @@
 'use strict';
 
-var CACHE = 'mp-v4';
+var CACHE = 'mp-v6';
 var FILES = [
     './index.html',
     './style.css',

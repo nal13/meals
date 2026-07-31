@@ -19,21 +19,18 @@ db.enablePersistence({ synchronizeTabs: true }).catch(function () {});
 // ---- State ------------------------------------------------------------------
 // recipes:     { id: { name, ingredients:[{ingId,qty}], icon } }
 // week:        { '0': recipeId|null, ... }  (0-6 = dias semana)
-// extras:      [ { id, ingId, qty } ]  — ingredientes extra semanal
-// sopa:        [ { id, ingId, qty } ]  — ingredientes da sopa
-// ingredients: { id: { name, canSopa, canExtra } }   — dictionary
+// ingredients: { id: { name, categoria } }   — dictionary
 // shoppingExtra: [ { id, name, qty } ]  manual additions
 // shoppingDone:  { key: true }          hidden items
 // generatedFromWeek: [ { name, qty, sources } ]  — gerado por botao "Gerar Lista"
 
 var recipes       = {};
 var week          = {};
-var extras        = [];
-var sopa          = [];
 var ingredients   = {};
 var shoppingExtra = [];
 var shoppingDone  = {};
 var generatedFromWeek = [];
+var weekExtras        = []; // { id, ingId, name } — extras added in Semana tab, included on Gerar Lista
 var weekHistory = [];  // last 3 snapshots, most-recent first
 var historyIdx  = 0;
 var pendingPickerDay = null;
@@ -41,7 +38,7 @@ var _pickerFilter    = 'all';
 var _pickerQuery     = '';
 var _pickerDebounce  = null;
 
-var _loaded  = { recipes:false, week:false, extras:false, sopa:false, ingredients:false, shopping:false, history:false };
+var _loaded  = { recipes:false, week:false, ingredients:false, shopping:false, history:false };
 var appReady = false;
 
 function _checkReady() {
@@ -52,9 +49,8 @@ function _checkReady() {
         migrateIngredientsToIngId();
         autoCategorizeIngredients();
         buildWeekGrid();
-        renderExtras();
-        renderSopa();
         renderShoppingList();
+        renderSemanaExtrasList();
         renderRecipesTab();
         renderHistorico();
         // Auto-clean duplicates and fix icons silently on every load
@@ -72,27 +68,16 @@ db.collection('recipes').onSnapshot(function(snap) {
 });
 
 db.collection('data').doc('week').onSnapshot(function(doc) {
-    week = (doc.exists && doc.data().days) ? doc.data().days : {};
+    week        = (doc.exists && doc.data().days)   ? doc.data().days   : {};
+    weekExtras  = (doc.exists && doc.data().extras) ? doc.data().extras : [];
     if (!_loaded.week) { _loaded.week = true; _checkReady(); return; }
-    if (appReady) { refreshAllSelects(); }
-});
-
-db.collection('data').doc('extras').onSnapshot(function(doc) {
-    extras = (doc.exists && doc.data().list) ? doc.data().list : [];
-    if (!_loaded.extras) { _loaded.extras = true; _checkReady(); return; }
-    if (appReady) { renderExtras(); }
-});
-
-db.collection('data').doc('sopa').onSnapshot(function(doc) {
-    sopa = (doc.exists && doc.data().list) ? doc.data().list : [];
-    if (!_loaded.sopa) { _loaded.sopa = true; _checkReady(); return; }
-    if (appReady) { renderSopa(); }
+    if (appReady) { refreshAllSelects(); renderSemanaExtrasList(); }
 });
 
 db.collection('data').doc('ingredients').onSnapshot(function(doc) {
     ingredients = (doc.exists && doc.data().dict) ? doc.data().dict : {};
     if (!_loaded.ingredients) { _loaded.ingredients = true; _checkReady(); return; }
-    if (appReady) { renderIngredientsDict(); renderExtras(); renderSopa(); }
+    if (appReady) { renderIngredientsDict(); }
 });
 
 db.collection('data').doc('shopping').onSnapshot(function(doc) {
@@ -112,9 +97,7 @@ db.collection('data').doc('history').onSnapshot(function(doc) {
 
 function saveRecipe(id, data)  { db.collection('recipes').doc(id).set(data).catch(console.error); }
 function deleteRecipeDb(id)    { db.collection('recipes').doc(id).delete().catch(console.error); }
-function saveWeek(w)           { db.collection('data').doc('week').set({ days: w }).catch(console.error); }
-function saveExtras(list)      { db.collection('data').doc('extras').set({ list: list }).catch(console.error); }
-function saveSopa(list)        { db.collection('data').doc('sopa').set({ list: list }).catch(console.error); }
+function saveWeek(w)           { db.collection('data').doc('week').set({ days: w, extras: weekExtras }).catch(console.error); }
 function saveIngredients(dict) { db.collection('data').doc('ingredients').set({ dict: dict }).catch(console.error); }
 function saveShopping()        { db.collection('data').doc('shopping').set({ extra: shoppingExtra, done: shoppingDone, generated: generatedFromWeek }).catch(console.error); }
 function saveHistory(h)        { db.collection('data').doc('history').set({ items: h }).catch(console.error); }
@@ -301,14 +284,6 @@ document.getElementById('picker-filters').addEventListener('click', function(e) 
     renderPickerGrid(_pickerFilter, _pickerQuery);
 });
 
-// ---- Extras (ingredient-based) -----------------------------------------------
-
-function getIngsByFlag(flag) {
-    return Object.keys(ingredients)
-        .filter(function(id) { return ingredients[id][flag]; })
-        .sort(function(a,b) { return ingredients[a].name.localeCompare(ingredients[b].name); });
-}
-
 // ---- Ingredient helpers ----------------------------------------------------
 
 function getIngName(ingId) {
@@ -319,12 +294,19 @@ function getIngCategoria(ingId) {
     return (ingredients[ingId] && ingredients[ingId].categoria) ? ingredients[ingId].categoria : 'Outros';
 }
 
-function getIngCategoriaByName(name) {
+function getIngByName(name) {
     var key = (name || '').trim().toLowerCase();
-    var id = Object.keys(ingredients).find(function(iid) {
-        return ingredients[iid].name.toLowerCase() === key;
-    });
-    return (id && ingredients[id].categoria) ? ingredients[id].categoria : 'Outros';
+    if (!key) return null;
+    return Object.keys(ingredients).find(function(iid) {
+        return ingredients[iid].name.toLowerCase() === key ||
+               (ingredients[iid].nameEn || '').toLowerCase() === key;
+    }) || null;
+}
+
+function getIngCategoriaByName(name) {
+    var id = getIngByName(name);
+    if (id && ingredients[id].categoria) return ingredients[id].categoria;
+    return autoAssignCategoria((name || '').trim()) || 'Outros';
 }
 
 function getCatIcon(ingId, ingName) {
@@ -337,86 +319,6 @@ function resolveIngNames(ings) {
         return { name: getIngName(i.ingId) || (i.name || ''), qty: i.qty };
     });
 }
-
-function buildIngSelectRow(entry, list, flag, saveList, renderFn) {
-    var card = document.createElement('div');
-    card.className = 'ing-slot-card';
-
-    var ingIds = getIngsByFlag(flag);
-
-    var select = document.createElement('select');
-    select.className = 'day-select';
-    select.innerHTML = '<option value="">-- Ingrediente --</option>';
-    ingIds.forEach(function(id) {
-        var opt = document.createElement('option');
-        opt.value = id;
-        opt.textContent = ingredients[id].name;
-        if (id === entry.ingId) opt.selected = true;
-        select.appendChild(opt);
-    });
-
-    var qtyIn = document.createElement('input');
-    qtyIn.type = 'number'; qtyIn.min = '0'; qtyIn.step = 'any';
-    qtyIn.className = 'ing-slot-qty';
-    qtyIn.placeholder = 'Qtd';
-    qtyIn.value = entry.qty || '';
-
-    select.addEventListener('change', (function(eid) { return function() {
-        var e = list.find(function(x) { return x.id === eid; });
-        if (e) { e.ingId = select.value || null; saveList(list); }
-    }; })(entry.id));
-
-    qtyIn.addEventListener('change', (function(eid) { return function() {
-        var e = list.find(function(x) { return x.id === eid; });
-        if (e) { e.qty = parseFloat(qtyIn.value) || 0; saveList(list); }
-    }; })(entry.id));
-
-    var delBtn = document.createElement('button');
-    delBtn.className = 'btn-icon'; delBtn.textContent = '\u2715'; delBtn.title = 'Remover';
-    delBtn.addEventListener('click', (function(eid) { return function() {
-        list.splice(list.findIndex(function(x) { return x.id === eid; }), 1);
-        saveList(list); renderFn();
-    }; })(entry.id));
-
-    card.appendChild(select);
-    card.appendChild(qtyIn);
-    card.appendChild(delBtn);
-    return card;
-}
-
-function renderExtras() {
-    var container = document.getElementById('extra-list');
-    var emptyMsg  = document.getElementById('extra-empty');
-    container.innerHTML = '';
-    if (!extras.length) { emptyMsg.classList.remove('hidden'); return; }
-    emptyMsg.classList.add('hidden');
-    extras.forEach(function(entry) {
-        container.appendChild(buildIngSelectRow(entry, extras, 'canExtra', saveExtras, renderExtras));
-    });
-}
-
-function renderSopa() {
-    var container = document.getElementById('sopa-list');
-    var emptyMsg  = document.getElementById('sopa-empty');
-    container.innerHTML = '';
-    if (!sopa.length) { emptyMsg.classList.remove('hidden'); return; }
-    emptyMsg.classList.add('hidden');
-    sopa.forEach(function(entry) {
-        container.appendChild(buildIngSelectRow(entry, sopa, 'canSopa', saveSopa, renderSopa));
-    });
-}
-
-document.getElementById('add-extra-row').addEventListener('click', function() {
-    if (extras.length >= 10) { alert('Maximo de 10 extras atingido.'); return; }
-    extras.push({ id: uid(), ingId: null, qty: 0 });
-    saveExtras(extras); renderExtras();
-});
-
-document.getElementById('add-sopa-row').addEventListener('click', function() {
-    if (sopa.length >= 10) { alert('Maximo de 10 ingredientes de sopa.'); return; }
-    sopa.push({ id: uid(), ingId: null, qty: 0 });
-    saveSopa(sopa); renderSopa();
-});
 
 // ---- Shopping list ----------------------------------------------------------
 
@@ -451,6 +353,23 @@ function renderShoppingList() {
     }
     emptyMsg.classList.add('hidden');
 
+    function updateItemQty(item, newQty) {
+        var gIdx = generatedFromWeek.findIndex(function(g) { return g.key === item.key; });
+        if (gIdx >= 0) { generatedFromWeek[gIdx].qty = newQty; }
+        shoppingExtra.forEach(function(e) {
+            if (e.name.trim().toLowerCase() === item.key) e.qty = newQty;
+        });
+        saveShopping();
+    }
+
+    function removeItem(item) {
+        generatedFromWeek = generatedFromWeek.filter(function(g) { return g.key !== item.key; });
+        if (item.extraIds && item.extraIds.length) {
+            shoppingExtra = shoppingExtra.filter(function(e) { return item.extraIds.indexOf(e.id) === -1; });
+        }
+        saveShopping(); renderShoppingList();
+    }
+
     function makeItem(item) {
         var li = document.createElement('li');
         li.className = 'shop-item' + (shoppingDone[item.key] ? ' shop-done' : '');
@@ -468,53 +387,59 @@ function renderShoppingList() {
         nameLine.appendChild(iconEl);
         nameLine.appendChild(nameEl);
         left.appendChild(nameLine);
+        if (item.sources && item.sources.length) {
+            var srcEl = document.createElement('span');
+            srcEl.className = 'shop-item-sources';
+            srcEl.textContent = item.sources.join(', ');
+            left.appendChild(srcEl);
+        }
 
         var right = document.createElement('div');
         right.className = 'shop-item-right';
         var q = Math.round(item.qty * 1000) / 1000;
+
         if (listEditMode && !shoppingDone[item.key]) {
-            var qInput = document.createElement('input');
-            qInput.type = 'number'; qInput.min = '0'; qInput.step = 'any';
-            qInput.className = 'shop-item-qty-input';
-            qInput.value = q || '';
-            qInput.addEventListener('change', (function(it) { return function() {
-                var newQty = parseFloat(qInput.value) || 0;
-                // update in generatedFromWeek
-                var gIdx = generatedFromWeek.findIndex(function(g) { return g.key === it.key; });
-                if (gIdx >= 0) { generatedFromWeek[gIdx].qty = newQty; saveShopping(); }
-                // update in shoppingExtra
-                var matched = false;
-                shoppingExtra.forEach(function(e) {
-                    if (e.name.trim().toLowerCase() === it.key) { e.qty = newQty; matched = true; }
-                });
-                if (matched) saveShopping();
-            }; })(item));
-            right.appendChild(qInput);
-        } else if (q > 0) {
-            var qEl = document.createElement('span');
-            qEl.className = 'shop-item-qty'; qEl.textContent = q;
-            right.appendChild(qEl);
-        }
-        var toggleBtn = document.createElement('button');
-        toggleBtn.className = 'btn-icon shop-toggle';
-        toggleBtn.textContent = shoppingDone[item.key] ? '\u21a9' : '\u2713';
-        toggleBtn.title = shoppingDone[item.key] ? 'Mostrar' : 'Marcar como comprado';
-        toggleBtn.addEventListener('click', (function(key) { return function() {
-            if (shoppingDone[key]) delete shoppingDone[key]; else shoppingDone[key] = true;
-            saveShopping(); renderShoppingList();
-        }; })(item.key));
-        right.appendChild(toggleBtn);
-        if (item.extraIds && item.extraIds.length) {
-            var removeBtn = document.createElement('button');
-            removeBtn.className = 'btn-icon';
-            removeBtn.textContent = '\u2715';
-            removeBtn.title = 'Remover ingrediente avulso';
-            removeBtn.addEventListener('click', (function(ids) { return function() {
-                shoppingExtra = shoppingExtra.filter(function(e) { return ids.indexOf(e.id) === -1; });
+            // Stepper − qty +
+            var currentQty = q || 1;
+            var stepper = document.createElement('div');
+            stepper.className = 'shop-stepper';
+            var minusBtn = document.createElement('button');
+            minusBtn.className = 'stepper-btn'; minusBtn.textContent = '\u2212';
+            var qtySpan = document.createElement('span');
+            qtySpan.className = 'stepper-val'; qtySpan.textContent = currentQty;
+            var plusBtn = document.createElement('button');
+            plusBtn.className = 'stepper-btn'; plusBtn.textContent = '+';
+            minusBtn.addEventListener('click', function() {
+                if (currentQty > 0) { currentQty = Math.round((currentQty - 1) * 1000) / 1000; qtySpan.textContent = currentQty; updateItemQty(item, currentQty); }
+            });
+            plusBtn.addEventListener('click', function() {
+                currentQty = Math.round((currentQty + 1) * 1000) / 1000; qtySpan.textContent = currentQty; updateItemQty(item, currentQty);
+            });
+            stepper.appendChild(minusBtn); stepper.appendChild(qtySpan); stepper.appendChild(plusBtn);
+            right.appendChild(stepper);
+        } else {
+            if (q > 0) {
+                var qEl = document.createElement('span');
+                qEl.className = 'shop-item-qty'; qEl.textContent = q;
+                right.appendChild(qEl);
+            }
+            var toggleBtn = document.createElement('button');
+            toggleBtn.className = 'btn-icon shop-toggle';
+            toggleBtn.textContent = shoppingDone[item.key] ? '\u21a9' : '\u2713';
+            toggleBtn.title = shoppingDone[item.key] ? 'Mostrar' : 'Marcar como comprado';
+            toggleBtn.addEventListener('click', (function(key) { return function() {
+                if (shoppingDone[key]) delete shoppingDone[key]; else shoppingDone[key] = true;
                 saveShopping(); renderShoppingList();
-            }; })(item.extraIds.slice()));
-            right.appendChild(removeBtn);
+            }; })(item.key));
+            right.appendChild(toggleBtn);
         }
+
+        var removeBtn = document.createElement('button');
+        removeBtn.className = 'btn-icon shop-remove';
+        removeBtn.textContent = '\u2715';
+        removeBtn.title = 'Remover';
+        removeBtn.addEventListener('click', function() { removeItem(item); });
+        right.appendChild(removeBtn);
 
         li.appendChild(left); li.appendChild(right);
         return li;
@@ -575,6 +500,185 @@ document.getElementById('edit-list-btn').addEventListener('click', function() {
     this.textContent = listEditMode ? '\u2713 Editar' : '\u270E Editar';
     renderShoppingList();
 });
+
+// ---- Semana — extras search -------------------------------------------------
+
+function renderSemanaExtrasList() {
+    var wrap = document.getElementById('semana-extras-chips');
+    if (!wrap) return;
+    wrap.innerHTML = '';
+    weekExtras.forEach(function(item) {
+        var div = document.createElement('div');
+        div.className = 'shop-item';
+
+        var left = document.createElement('div');
+        left.className = 'shop-item-left';
+        var nameLine = document.createElement('div');
+        nameLine.className = 'ing-name-line';
+        var iconEl = document.createElement('span');
+        iconEl.className = 'ing-cat-badge';
+        iconEl.textContent = autoAssignIcon(item.name);
+        var nameEl = document.createElement('span');
+        nameEl.className = 'shop-item-name';
+        nameEl.textContent = item.name;
+        nameLine.appendChild(iconEl);
+        nameLine.appendChild(nameEl);
+        left.appendChild(nameLine);
+
+        var right = document.createElement('div');
+        right.className = 'shop-item-right';
+        if (item.qty && item.qty > 1) {
+            var qEl = document.createElement('span');
+            qEl.className = 'shop-item-qty';
+            qEl.textContent = item.qty;
+            right.appendChild(qEl);
+        }
+        var removeBtn = document.createElement('button');
+        removeBtn.className = 'btn-icon shop-remove';
+        removeBtn.textContent = '\u2715';
+        removeBtn.title = 'Remover';
+        removeBtn.addEventListener('click', (function(itemId) {
+            return function() {
+                weekExtras = weekExtras.filter(function(e) { return e.id !== itemId; });
+                saveWeek(week);
+                renderSemanaExtrasList();
+            };
+        })(item.id));
+        right.appendChild(removeBtn);
+
+        div.appendChild(left);
+        div.appendChild(right);
+        wrap.appendChild(div);
+    });
+}
+
+(function() {
+    var input       = document.getElementById('semana-extras-input');
+    var list        = document.getElementById('semana-extras-suggestions');
+    var confirmDiv  = document.getElementById('semana-extras-confirm');
+    var confirmIcon = document.getElementById('semana-extras-confirm-icon');
+    var confirmName = document.getElementById('semana-extras-confirm-name');
+    var qtyEl       = document.getElementById('semana-extras-qty');
+    var minusBtn    = document.getElementById('semana-extras-minus');
+    var plusBtn     = document.getElementById('semana-extras-plus');
+    var addBtn      = document.getElementById('semana-extras-add');
+    var cancelBtn   = document.getElementById('semana-extras-cancel');
+
+    var activeIdx   = -1;
+    var matches     = [];
+    var pendingId   = null;
+    var pendingQty  = 1;
+
+    function buildMatches(q) {
+        var lower = q.toLowerCase().trim();
+        if (lower.length < 2) return [];
+        return Object.keys(ingredients)
+            .filter(function(id) {
+                return ingredients[id].name.toLowerCase().indexOf(lower) === 0;
+            })
+            .sort(function(a, b) {
+                return ingredients[a].name.localeCompare(ingredients[b].name);
+            })
+            .slice(0, 8);
+    }
+
+    function renderSuggestions() {
+        list.innerHTML = '';
+        if (!matches.length) { list.classList.add('hidden'); return; }
+        matches.forEach(function(id, idx) {
+            var ing  = ingredients[id];
+            var icon = autoAssignIcon(ing.name);
+            var li   = document.createElement('li');
+            if (idx === activeIdx) li.classList.add('active');
+            li.innerHTML =
+                '<span class="sug-icon">' + esc(icon) + '</span>' +
+                '<span>' + esc(ing.name) + '</span>' +
+                '<span class="sug-cat">' + esc(ing.categoria || '') + '</span>';
+            li.addEventListener('pointerdown', function(e) {
+                e.preventDefault();
+                showConfirm(id);
+            });
+            list.appendChild(li);
+        });
+        list.classList.remove('hidden');
+    }
+
+    function showConfirm(id) {
+        var ing = ingredients[id];
+        if (!ing) return;
+        pendingId  = id;
+        pendingQty = 1;
+        confirmIcon.textContent = autoAssignIcon(ing.name);
+        confirmName.textContent = ing.name;
+        qtyEl.textContent = '1';
+        list.classList.add('hidden');
+        input.value = '';
+        matches = []; activeIdx = -1;
+        confirmDiv.classList.remove('hidden');
+    }
+
+    function hideConfirm() {
+        pendingId = null;
+        confirmDiv.classList.add('hidden');
+    }
+
+    function commitExtra() {
+        if (!pendingId) return;
+        var ing = ingredients[pendingId];
+        if (!ing) { hideConfirm(); return; }
+        var already = weekExtras.some(function(e) { return e.ingId === pendingId; });
+        if (!already) {
+            weekExtras.push({ id: uid(), ingId: pendingId, name: ing.name, qty: pendingQty });
+            saveWeek(week);
+            renderSemanaExtrasList();
+        }
+        hideConfirm();
+        input.focus();
+    }
+
+    minusBtn.addEventListener('click', function() {
+        if (pendingQty > 1) { pendingQty--; qtyEl.textContent = pendingQty; }
+    });
+    plusBtn.addEventListener('click', function() {
+        pendingQty++; qtyEl.textContent = pendingQty;
+    });
+    addBtn.addEventListener('click', commitExtra);
+    cancelBtn.addEventListener('click', hideConfirm);
+
+    input.addEventListener('input', function() {
+        hideConfirm();
+        activeIdx = -1;
+        matches = buildMatches(input.value);
+        renderSuggestions();
+    });
+
+    input.addEventListener('keydown', function(e) {
+        if (!matches.length) return;
+        if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            activeIdx = Math.min(activeIdx + 1, matches.length - 1);
+            renderSuggestions();
+        } else if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            activeIdx = Math.max(activeIdx - 1, 0);
+            renderSuggestions();
+        } else if (e.key === 'Enter') {
+            e.preventDefault();
+            if (activeIdx >= 0) showConfirm(matches[activeIdx]);
+            else if (matches.length > 0) showConfirm(matches[0]);
+        } else if (e.key === 'Escape') {
+            matches = []; activeIdx = -1; list.classList.add('hidden');
+        }
+    });
+
+    input.addEventListener('blur', function() {
+        setTimeout(function() { list.classList.add('hidden'); }, 300);
+    });
+
+    input.addEventListener('focus', function() {
+        if (matches.length) list.classList.remove('hidden');
+    });
+})();
 
 // ---- Recipes tab ------------------------------------------------------------
 
@@ -681,7 +785,7 @@ document.getElementById('clear-list-btn').addEventListener('click', function() {
 });
 
 document.getElementById('clear-week-btn').addEventListener('click', function() {
-    if (!confirm('Limpar a semana? As receitas e Extra Semanal nao sao apagados.')) return;
+    if (!confirm('Limpar a semana?')) return;
     // Snapshot current state before clearing
     var snapshot = {
         date: new Date().toISOString(),
@@ -696,9 +800,9 @@ document.getElementById('clear-week-btn').addEventListener('click', function() {
     historyIdx = 0;
     saveHistory(weekHistory);
     renderHistorico();
-    week = {}; saveWeek(week);
-    sopa = []; saveSopa(sopa); renderSopa();
+    week = {}; weekExtras = []; saveWeek(week);
     refreshAllSelects();
+    renderSemanaExtrasList();
 });
 
 // ---- Gerar Lista modal -----------------------------------------------------
@@ -729,8 +833,7 @@ function buildIngredientTotals() {
         if (label && totals[key].sources.indexOf(label) === -1) totals[key].sources.push(label);
     }
     Object.keys(week).forEach(function(d) { addFromRecipe(week[d]); });
-    extras.forEach(function(e) { addFromIngEntry(e, 'Extra'); });
-    sopa.forEach(function(e) { addFromIngEntry(e, 'Sopa'); });
+    weekExtras.forEach(function(e) { addFromIngEntry(e, 'Extra'); });
     return Object.keys(totals).sort().map(function(k) { return Object.assign({ key: k }, totals[k]); });
 }
 
@@ -1026,23 +1129,6 @@ function buildIngDictRow(id) {
 
     row.appendChild(left);
 
-    // Checkboxes for canSopa / canExtra — placed in fixed columns matching the header
-    [['canSopa', 'Sopa'], ['canExtra', 'Extra']].forEach(function(pair) {
-        var flag = pair[0];
-        var cell = document.createElement('div');
-        cell.className = 'ing-dict-flag-cell';
-        var cb = document.createElement('input');
-        cb.type = 'checkbox';
-        cb.checked = !!ingredients[id][flag];
-        cb.addEventListener('change', (function(iid, f, c) { return function() {
-            ingredients[iid][f] = c.checked;
-            saveIngredients(ingredients);
-            renderExtras(); renderSopa();
-        }; })(id, flag, cb));
-        cell.appendChild(cb);
-        row.appendChild(cell);
-    });
-
     var btns = document.createElement('div');
     btns.className = 'ing-dict-row-btns';
 
@@ -1068,7 +1154,7 @@ function buildIngEditRow(id) {
 
     var usedIn = getRecipesUsingIngredient(id);
 
-    // Name input spanning flag columns
+    // Name input
     var input = document.createElement('input');
     input.type = 'text';
     input.className = 'ing-dict-input';
@@ -1163,9 +1249,7 @@ function addIngredientToDict(nameOverride) {
     var input = document.getElementById('ing-dict-input');
     var name  = (nameOverride !== undefined ? nameOverride : input.value).trim();
     if (!name) { if (!nameOverride) input.focus(); return null; }
-    var existing = Object.keys(ingredients).find(function(id) {
-        return ingredients[id].name.toLowerCase() === name.toLowerCase();
-    });
+    var existing = getIngByName(name);
     if (existing) { if (!nameOverride) input.value = ''; return existing; }
     var id = uid();
     var catSel = document.getElementById('ing-dict-cat-select');
@@ -1301,12 +1385,10 @@ document.getElementById('modal-save').addEventListener('click', function() {
         var n = row.querySelector('.ing-name').value.trim();
         var q = row.querySelector('.ing-qty').value.trim();
         if (!n) return;
-        var ingId = Object.keys(ingredients).find(function(iid) {
-            return ingredients[iid].name.toLowerCase() === n.toLowerCase();
-        });
+        var ingId = getIngByName(n);
         if (!ingId) {
             ingId = uid();
-            ingredients[ingId] = { name: n };
+            ingredients[ingId] = { name: n, categoria: autoAssignCategoria(n) };
             ingDictChanged = true;
         }
         row.querySelector('.ing-name').style.borderColor = '';
@@ -1328,9 +1410,6 @@ function openViewModal(rid) {
     viewingId = rid;
     var r = recipes[rid];
     document.getElementById('view-title').textContent = r.name;
-    var badge = document.getElementById('view-type-badge');
-    badge.textContent = '';
-    badge.className = '';
     var body = document.getElementById('view-body');
     body.innerHTML = '';
     var iconBig = document.createElement('span');
@@ -1404,38 +1483,61 @@ document.getElementById('view-delete').addEventListener('click', function() {
 
 // ---- Export -----------------------------------------------------------------
 
+function csvCell(val) {
+    var s = String(val === null || val === undefined ? '' : val);
+    if (s.indexOf(',') !== -1 || s.indexOf('"') !== -1 || s.indexOf('\n') !== -1 || s.indexOf('\r') !== -1) {
+        return '"' + s.replace(/"/g, '""') + '"';
+    }
+    return s;
+}
+
 function exportData() {
-    var data = {
-        ingredients: Object.keys(ingredients)
-            .sort(function(a,b){ return ingredients[a].name.localeCompare(ingredients[b].name); })
-            .map(function(id){
-                var ing = ingredients[id];
-                var obj = { name: ing.name };
-                if (ing.canSopa)   obj.canSopa   = true;
-                if (ing.canExtra)  obj.canExtra  = true;
-                if (ing.categoria) obj.categoria = ing.categoria;
-                return obj;
-            }),
-        recipes: Object.keys(recipes)
-            .sort(function(a,b){ return recipes[a].name.localeCompare(recipes[b].name); })
-            .map(function(id){
-                var rec = recipes[id];
-                return {
-                    name: rec.name,
-                    type: rec.type || 'main',
-                    icon: rec.icon || '',
-                    ingredients: (rec.ingredients || []).map(function(i){
-                        return { name: i.ingId ? getIngName(i.ingId) : (i.name || ''), qty: i.qty };
-                    })
-                };
-            })
-    };
-    var json = JSON.stringify(data, null, 2);
-    var blob = new Blob([json], { type: 'application/json' });
+    // Find max ingredient count across all recipes
+    var maxIngs = 0;
+    Object.keys(recipes).forEach(function(id){
+        var n = (recipes[id].ingredients || []).length;
+        if (n > maxIngs) maxIngs = n;
+    });
+
+    // Build header: type, name, categoria, icon, ing1_name..ingN_name, ing1_qty..ingN_qty
+    var header = ['type', 'name', 'categoria', 'icon'];
+    for (var j = 1; j <= maxIngs; j++) header.push('ing' + j + '_name');
+    for (var k = 1; k <= maxIngs; k++) header.push('ing' + k + '_qty');
+
+    var rows = [header];
+
+    Object.keys(ingredients)
+        .sort(function(a,b){ return ingredients[a].name.localeCompare(ingredients[b].name); })
+        .forEach(function(id){
+            var ing = ingredients[id];
+            var row = ['ingredient', ing.name, ing.categoria || '', ''];
+            for (var m = 0; m < maxIngs * 2; m++) row.push('');
+            rows.push(row);
+        });
+
+    Object.keys(recipes)
+        .sort(function(a,b){ return recipes[a].name.localeCompare(recipes[b].name); })
+        .forEach(function(id){
+            var rec = recipes[id];
+            var ings = rec.ingredients || [];
+            var row = ['recipe', rec.name, '', rec.icon || ''];
+            // ing names
+            for (var n = 0; n < maxIngs; n++) {
+                row.push(n < ings.length ? (ings[n].ingId ? getIngName(ings[n].ingId) : (ings[n].name || '')) : '');
+            }
+            // ing qtys
+            for (var q = 0; q < maxIngs; q++) {
+                row.push(q < ings.length ? (ings[q].qty || '') : '');
+            }
+            rows.push(row);
+        });
+
+    var csv = rows.map(function(row){ return row.map(csvCell).join(','); }).join('\r\n');
+    var blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8' });
     var url  = URL.createObjectURL(blob);
     var a    = document.createElement('a');
     a.href = url;
-    a.download = 'receitas-' + new Date().toISOString().slice(0,10) + '.json';
+    a.download = 'receitas-' + new Date().toISOString().slice(0,10) + '.csv';
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -1444,7 +1546,84 @@ function exportData() {
 
 document.getElementById('export-btn').addEventListener('click', exportData);
 
-// ---- Import JSON ------------------------------------------------------------
+// ---- Import CSV -------------------------------------------------------------
+
+function parseCSV(text) {
+    if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1); // strip BOM
+    var rows = [];
+    var row = [];
+    var field = '';
+    var inQuotes = false;
+    var i = 0;
+    while (i < text.length) {
+        var c = text[i];
+        if (inQuotes) {
+            if (c === '"') {
+                if (text[i + 1] === '"') { field += '"'; i += 2; continue; }
+                inQuotes = false;
+            } else { field += c; }
+        } else {
+            if (c === '"') { inQuotes = true; }
+            else if (c === ',') { row.push(field); field = ''; }
+            else if (c === '\r' || c === '\n') {
+                row.push(field); field = '';
+                if (row.some(function(v){ return v !== ''; })) rows.push(row);
+                row = [];
+                if (c === '\r' && text[i + 1] === '\n') i++;
+            } else { field += c; }
+        }
+        i++;
+    }
+    if (field !== '' || row.length) { row.push(field); if (row.some(function(v){ return v !== ''; })) rows.push(row); }
+    return rows;
+}
+
+function parseImportCSV(text) {
+    var rows = parseCSV(text);
+    if (rows.length < 2) throw new Error('Ficheiro vazio ou sem dados');
+    var header = rows[0].map(function(h){ return h.trim().toLowerCase(); });
+    var col = function(name) { return header.indexOf(name); };
+    var typeIdx = col('type'), nameIdx = col('name');
+    if (typeIdx === -1 || nameIdx === -1) throw new Error('Cabeçalho invalido: faltam colunas "type" e "name"');
+    var categoriaIdx = col('categoria'), iconIdx = col('icon');
+
+    // Detect ing1_name, ing2_name, ... and ing1_qty, ing2_qty, ...
+    var ingNameIdxs = [], ingQtyIdxs = [];
+    header.forEach(function(h, i) {
+        if (/^ing\d+_name$/.test(h)) ingNameIdxs.push({ n: parseInt(h.replace(/\D/g,''), 10), i: i });
+        if (/^ing\d+_qty$/.test(h))  ingQtyIdxs.push({ n: parseInt(h.replace(/\D/g,''), 10), i: i });
+    });
+    ingNameIdxs.sort(function(a,b){ return a.n - b.n; });
+    ingQtyIdxs.sort(function(a,b){ return a.n - b.n; });
+
+    var result = { ingredients: [], recipes: [] };
+    for (var i = 1; i < rows.length; i++) {
+        var row = rows[i];
+        var type = (row[typeIdx] || '').trim().toLowerCase();
+        var name = (row[nameIdx] || '').trim();
+        if (!name) continue;
+        if (type === 'ingredient') {
+            result.ingredients.push({
+                name: name,
+                categoria: categoriaIdx !== -1 ? (row[categoriaIdx] || '').trim() || null : null
+            });
+        } else if (type === 'recipe') {
+            var ings = [];
+            for (var ni = 0; ni < ingNameIdxs.length; ni++) {
+                var ingName = (row[ingNameIdxs[ni].i] || '').trim();
+                if (!ingName) continue;
+                var ingQty = ingQtyIdxs[ni] ? (row[ingQtyIdxs[ni].i] || '').trim() : '0';
+                ings.push({ name: ingName, qty: ingQty || '0' });
+            }
+            result.recipes.push({
+                name: name,
+                icon: iconIdx !== -1 ? (row[iconIdx] || '').trim() : '',
+                ingredients: ings
+            });
+        }
+    }
+    return result;
+}
 
 document.getElementById('import-file-input').addEventListener('change', function(e) {
     var file = e.target.files[0];
@@ -1453,42 +1632,32 @@ document.getElementById('import-file-input').addEventListener('change', function
     reader.onload = function(ev) {
         e.target.value = '';
         var data;
-        try { data = JSON.parse(ev.target.result); } catch(err) { alert('Ficheiro JSON invalido: ' + err.message); return; }
+        try { data = parseImportCSV(ev.target.result); } catch(err) { alert('Ficheiro CSV invalido: ' + err.message); return; }
         openImportModal(data);
     };
-    reader.readAsText(file);
+    reader.readAsText(file, 'UTF-8');
 });
 
 var importOverlay  = document.getElementById('import-overlay');
 var importData     = null; // { ingredients: [{name, isNew, mappedTo}], recipes: [{...}] }
 
 function openImportModal(raw) {
-    // Parse raw JSON into importData — supports both string[] and object[] for ingredients
     var rawIngs = Array.isArray(raw.ingredients) ? raw.ingredients.filter(function(n){
         return (typeof n === 'string' && n.trim()) || (n && typeof n === 'object' && n.name && String(n.name).trim());
     }) : [];
-    var rawRecipes  = Array.isArray(raw.recipes)     ? raw.recipes : [];
+    var rawRecipes = Array.isArray(raw.recipes) ? raw.recipes : [];
 
-    // Build import state
     importData = {
         ingredients: rawIngs.map(function(n) {
-            var name, canSopa, canExtra, categoria;
-            if (typeof n === 'string') {
-                name = n.trim(); canSopa = false; canExtra = false; categoria = null;
-            } else {
-                name = String(n.name || '').trim();
-                canSopa   = !!n.canSopa;
-                canExtra  = !!n.canExtra;
-                categoria = n.categoria || null;
-            }
+            var name = typeof n === 'string' ? n.trim() : String(n.name || '').trim();
+            var categoria = (n && typeof n === 'object') ? (n.categoria || null) : null;
             var existId = Object.keys(ingredients).find(function(id){ return ingredients[id].name.toLowerCase() === name.toLowerCase(); });
-            return { name: name, canSopa: canSopa, canExtra: canExtra, categoria: categoria, isNew: !existId, mappedTo: existId || null, deleted: false };
+            return { name: name, categoria: categoria, isNew: !existId, mappedTo: existId || null, deleted: false };
         }),
         recipes: rawRecipes.map(function(r) {
             return {
-                name:  (r.name  || '').trim(),
-                type:  (r.type === 'side' ? 'side' : 'main'),
-                icon:  (r.icon  || ''),
+                name: (r.name || '').trim(),
+                icon: (r.icon || ''),
                 ingredients: Array.isArray(r.ingredients) ? r.ingredients.map(function(i){
                     return { name: (i.name||'').trim(), qty: String(i.qty||'0'), deleted: false };
                 }) : [],
@@ -1587,21 +1756,11 @@ function renderImportModal() {
             nameInput.value = rec.name;
             nameInput.addEventListener('input', function(){ importData.recipes[recIdx].name = nameInput.value; });
 
-            var typeSel = document.createElement('select');
-            typeSel.className = 'import-recipe-type';
-            ['main','side'].forEach(function(t) {
-                var opt = document.createElement('option');
-                opt.value = t; opt.textContent = t === 'main' ? 'Principal' : 'Secundaria';
-                typeSel.appendChild(opt);
-            });
-            typeSel.value = rec.type;
-            typeSel.addEventListener('change', function(){ importData.recipes[recIdx].type = typeSel.value; });
-
             var delRecBtn = document.createElement('button');
             delRecBtn.className = 'btn-icon'; delRecBtn.textContent = '\u2715'; delRecBtn.title = 'Remover receita';
             delRecBtn.addEventListener('click', function() { importData.recipes[recIdx].deleted = true; renderImportModal(); });
 
-            cardHeader.appendChild(nameInput); cardHeader.appendChild(typeSel); cardHeader.appendChild(delRecBtn);
+            cardHeader.appendChild(nameInput); cardHeader.appendChild(delRecBtn);
             card.appendChild(cardHeader);
 
             // ingredients of recipe
@@ -1610,7 +1769,7 @@ function renderImportModal() {
             (rec.ingredients || []).filter(function(i){ return !i.deleted; }).forEach(function(ing) {
                 var ingIdx = rec.ingredients.indexOf(ing);
                 // find if ingredient is known
-                var known = Object.keys(ingredients).some(function(id){ return ingredients[id].name.toLowerCase() === ing.name.toLowerCase(); })
+                var known = getIngByName(ing.name) !== null
                     || importData.ingredients.some(function(ii){ return !ii.deleted && (ii.mappedTo ? ingredients[ii.mappedTo] && ingredients[ii.mappedTo].name.toLowerCase() === ing.name.toLowerCase() : ii.name.toLowerCase() === ing.name.toLowerCase()); });
                 var li = document.createElement('li');
                 li.className = known ? '' : 'import-ing-unknown';
@@ -1645,11 +1804,9 @@ document.getElementById('import-confirm').addEventListener('click', function() {
     // 1. Ingredients
     importData.ingredients.filter(function(i){ return !i.deleted; }).forEach(function(item) {
         if (item.mappedTo) return; // maps to existing, no new entry
-        var exists = Object.keys(ingredients).find(function(id){ return ingredients[id].name.toLowerCase() === item.name.toLowerCase(); });
+        var exists = getIngByName(item.name);
         if (!exists) {
             var newIng = { name: item.name };
-            if (item.canSopa)   newIng.canSopa   = true;
-            if (item.canExtra)  newIng.canExtra  = true;
             if (item.categoria) newIng.categoria = item.categoria;
             ingredients[uid()] = newIng;
             count.ing++;
@@ -1662,7 +1819,7 @@ document.getElementById('import-confirm').addEventListener('click', function() {
         // check mappings first
         var mapped = importData.ingredients.find(function(i){ return i.name.toLowerCase() === name.toLowerCase() && i.mappedTo; });
         if (mapped) return mapped.mappedTo;
-        return Object.keys(ingredients).find(function(id){ return ingredients[id].name.toLowerCase() === name.toLowerCase(); }) || null;
+        return getIngByName(name);
     }
 
     // 2. Recipes
@@ -1679,7 +1836,7 @@ document.getElementById('import-confirm').addEventListener('click', function() {
         });
         var id = uid();
         var recIcon = rec.icon || autoAssignIcon(rec.name, ings.map(function(i){ return { name: getIngName(i.ingId) }; })) || DEFAULT_ICONS[0];
-        recipes[id] = { name: rec.name, type: rec.type, ingredients: ings, icon: recIcon };
+        recipes[id] = { name: rec.name, ingredients: ings, icon: recIcon };
         saveRecipe(id, recipes[id]); count.rec++;
     });
     if (ingChanged2) saveIngredients(ingredients);
@@ -1695,10 +1852,10 @@ document.getElementById('import-confirm').addEventListener('click', function() {
 (function() {
     var TAB_SECTIONS = {
         lista:    ['section-lista'],
-        semana:   ['section-semana', 'section-extra', 'section-sopa'],
+        semana:   ['section-semana'],
         receitas: ['section-receitas']
     };
-    var ALL = ['section-lista','section-semana','section-extra','section-sopa','section-receitas'];
+    var ALL = ['section-lista','section-semana','section-receitas'];
 
     function switchTab(name) {
         document.querySelectorAll('.tab-btn').forEach(function(btn) {
@@ -1785,17 +1942,14 @@ function deduplicateAndFixIconsSilent() { _runDedup(true); }
 // ---- Init (triggered by Firestore via _checkReady) --------------------------
 
 function autoCategorizeIngredients() {
-    if (localStorage.getItem('categoriaMigrated')) return; // already ran once
     var changed = false;
     Object.keys(ingredients).forEach(function(id) {
-        if (!ingredients[id].categoria || ingredients[id].categoria === 'Outros') {
+        if (!ingredients[id].categoria) {
             ingredients[id].categoria = autoAssignCategoria(ingredients[id].name);
             changed = true;
         }
     });
     if (changed) saveIngredients(ingredients);
-    localStorage.setItem('categoriaMigrated', '1');
-    console.log('[autocategorize] one-time categorization done');
 }
 
 function migrateIngredientsToIngId() {
@@ -1808,12 +1962,10 @@ function migrateIngredientsToIngId() {
             if (ing.ingId !== undefined) return ing; // already migrated
             var name = (ing.name || '').trim();
             if (!name) return ing;
-            var id = Object.keys(ingredients).find(function(iid) {
-                return ingredients[iid].name.toLowerCase() === name.toLowerCase();
-            });
+            var id = getIngByName(name);
             if (!id) {
                 id = uid();
-                ingredients[id] = { name: name };
+                ingredients[id] = { name: name, categoria: autoAssignCategoria(name) };
                 ingChanged = true;
             }
             changed = true;

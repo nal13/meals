@@ -1,0 +1,10 @@
+type,name,categoria,icon,ing1_name,ing2_name,ing3_name,ing4_name,ing5_name,ing1_qty,ing2_qty,ing3_qty,ing4_qty,ing5_qty
+ingredient,Leite,Lacticínios,,,,,,,,,,
+ingredient,Ovos,Carne e Peixe,,,,,,,,,,
+ingredient,Farinha,Massas e Conservas,,,,,,,,,,
+ingredient,Azeite,Condimentos,,,,,,,,,,
+ingredient,Sal,Condimentos,,,,,,,,,,
+ingredient,Alho,Legumes e Vegetais,,,,,,,,,,
+ingredient,Cebola,Legumes e Vegetais,,,,,,,,,,
+recipe,Esparguete a Bolonhesa,,🍝,Esparguete,Carne picada,Cebola,Alho,Azeite,200,300,1,2,30
+recipe,Sopa de Legumes,,🥣,Cebola,Sal,Azeite,,,,1,5,20,,
