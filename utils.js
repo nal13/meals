@@ -100,9 +100,30 @@ function esc(s) {
         .replace(/>/g, '&gt;');
 }
 
-/** Generates a short random unique ID. */
+/** Generates a short random unique ID (fallback / internal use). */
 function uid() {
     return Date.now().toString(36) + Math.random().toString(36).slice(2);
+}
+
+/**
+ * Creates a readable slug ID from a name, unique against existingKeys.
+ * e.g. "Esparguete à Bolonhesa" → "esparguete-a-bolonhesa"
+ * Appends -2, -3, … on collision. Falls back to uid() for empty names.
+ * @param {string} name
+ * @param {string[]} existingKeys
+ */
+function slugId(name, existingKeys) {
+    var slug = _normalize(String(name || ''))
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '')
+        .slice(0, 40);
+    if (!slug) return uid();
+    var keys = existingKeys || [];
+    if (keys.indexOf(slug) === -1) return slug;
+    var n = 2;
+    while (keys.indexOf(slug + '-' + n) !== -1) n++;
+    return slug + '-' + n;
 }
 
 var FOOD_TYPE_RULES = [
@@ -283,5 +304,5 @@ function getEnSynonym(name) {
 
 // CommonJS export (used by Jest tests); no-op in browser
 if (typeof module !== 'undefined') {
-    module.exports = { DEFAULT_ICONS: DEFAULT_ICONS, ICON_RULES: ICON_RULES, CATEGORIAS: CATEGORIAS, CATEGORIA_ICONS: CATEGORIA_ICONS, CATEGORIA_RULES: CATEGORIA_RULES, PT_EN_SYNONYMS: PT_EN_SYNONYMS, autoAssignIcon: autoAssignIcon, autoAssignCategoria: autoAssignCategoria, getEnSynonym: getEnSynonym, esc: esc, uid: uid, getRecipeFoodType: getRecipeFoodType };
+    module.exports = { DEFAULT_ICONS: DEFAULT_ICONS, ICON_RULES: ICON_RULES, CATEGORIAS: CATEGORIAS, CATEGORIA_ICONS: CATEGORIA_ICONS, CATEGORIA_RULES: CATEGORIA_RULES, PT_EN_SYNONYMS: PT_EN_SYNONYMS, autoAssignIcon: autoAssignIcon, autoAssignCategoria: autoAssignCategoria, getEnSynonym: getEnSynonym, esc: esc, uid: uid, slugId: slugId, getRecipeFoodType: getRecipeFoodType };
 }

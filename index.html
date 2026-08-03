@@ -55,8 +55,12 @@
             <h2>Semana</h2>
             <div class="subtab-actions" style="margin-bottom:.85rem;justify-content:space-between">
                 <button class="btn-outline" id="gerar-lista-btn">&#x1F4CB; Gerar Lista</button>
-                <button class="btn-outline" id="clear-week-btn">Limpar</button>
+                <div style="display:flex;gap:.5rem">
+                    <button class="btn-outline" id="historico-week-btn">&#x1F4C5; Hist&#xF3;rico</button>
+                    <button class="btn-outline" id="clear-week-btn">Limpar</button>
+                </div>
             </div>
+            <div id="semana-historico-panel" class="hidden"></div>
             <div class="week-grid" id="week-grid"></div>
 
             <div class="semana-extras-section" id="semana-extras-section">
@@ -86,7 +90,6 @@
             <div class="subtab-bar">
                 <button class="subtab-btn active" data-subtab="receitas-grid">Receitas</button>
                 <button class="subtab-btn" data-subtab="ingredientes-dict">Ingredientes</button>
-                <button class="subtab-btn" data-subtab="historico">Hist&#xF3;rico</button>
                 <button class="subtab-btn" data-subtab="import-json">Import</button>
             </div>
 
@@ -131,9 +134,6 @@
                 <div id="ing-dict-list" class="ing-dict-list"></div>
             </div>
 
-            <!-- Subtab: Histórico -->
-            <div id="subtab-historico" class="hidden"></div>
-
             <!-- Subtab: Import / Export -->
             <div id="subtab-import-json" class="hidden">
                 <div class="subtab-actions" style="flex-direction:column;gap:.75rem;align-items:flex-start">
@@ -161,27 +161,27 @@
             <button class="modal-close" id="modal-close">X</button>
         </div>
         <div class="modal-body">
-            <label>Nome da receita
+            <label>Nome da receita</label>
+            <div class="recipe-name-row">
                 <input type="text" id="recipe-name-input" placeholder="ex: Esparguete a Bolonhesa">
-            </label>
-            <div>
+                <button type="button" class="selected-icon-btn" id="selected-icon-btn" title="Escolher ou trocar ícone"></button>
+            </div>
+            <div id="icon-picker-wrap">
                 <div class="icon-picker-label">
                     <span class="field-label">Ícone</span>
                 </div>
                 <div id="icon-picker" class="icon-picker"></div>
-                <div class="icon-custom-row">
-                    <input type="text" id="icon-custom-input" class="icon-custom-input" placeholder="outro emoji…" maxlength="4">
-                </div>
             </div>
             <div class="ingredients-header">
                 <span class="field-label">Ingredientes</span>
-                <button class="btn-small" id="add-ingredient-row">+ Adicionar</button>
+                <button class="btn-outline ingredient-add-plus" id="add-ingredient-row" title="Adicionar ingrediente">+</button>
             </div>
             <div id="ingredients-list"></div>
         </div>
         <div class="modal-footer">
             <button class="btn-soft-danger hidden" id="modal-delete">Apagar Receita</button>
             <div style="display:flex;gap:.5rem;margin-left:auto">
+                <button class="btn-outline hidden" id="modal-use-week">Usar Nesta Semana</button>
                 <button class="btn-outline" id="modal-cancel">Cancelar</button>
                 <button class="btn-primary" id="modal-save">Guardar Receita</button>
             </div>
