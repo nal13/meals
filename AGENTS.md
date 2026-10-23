@@ -12,7 +12,7 @@ See [PRD.md](PRD.md) for full data model and module descriptions.
 ## Build & Test
 
 ```bash
-npm test          # Jest — runs tests/utils.test.js (55 tests)
+npm test          # Jest — runs tests/utils.test.js (153 tests)
 ```
 
 No build step. Open `index.html` directly in a browser, or:

@@ -34,6 +34,7 @@ Ideias e funcionalidades futuras organizadas por tema. Sem ordem de prioridade d
 
 ## 🗓️ Planeamento
 
+- ✅ ~~**Receitas habituais vs arquivo**~~ — feito (níveis automáticos a partir do histórico, toque rápido, repetir semana passada, fecho da semana com transição das não feitas)
 - **Templates de semana** — guardar configurações de semana tipo (ex: "semana de proteínas", "semana económica") para reutilizar rapidamente
 - **Rotação automática** — gerar o plano da semana evitando repetir receitas das últimas N semanas (com base no histórico)
 - **Plano por pessoa** — adaptar as quantidades consoante o número de pessoas do agregado
@@ -42,7 +43,9 @@ Ideias e funcionalidades futuras organizadas por tema. Sem ordem de prioridade d
 
 ## 🛒 Lista de Compras
 
-- **Lista por secção do supermercado** — agrupar os itens por corredor (frutas, lacticínios, carnes, etc.) para tornar as compras mais rápidas
+- ✅ ~~**Lista por secção do supermercado**~~ — feito (categorias na lista; revisão por sítio da casa)
+- ✅ ~~**Artigos de casa recorrentes**~~ — feito (lembrete com intervalo aprendido, "Está a acabar…")
+- **Compras a dois (fase 3)** — nome por dispositivo e "quem riscou"; estado "não havia" que passa para a lista seguinte; nota por item ("marca branca", "o maior"); indicador de quem está no supermercado
 - **Partilha da lista** — gerar um link ou QR code para partilhar a lista com outro membro do agregado
 - **Integração com app do supermercado** — exportar a lista diretamente para apps como Continente ou Pingo Doce
 

@@ -1,6 +1,38 @@
 'use strict';
 
-const { autoAssignIcon, esc, uid, DEFAULT_ICONS, CATEGORIAS, autoAssignCategoria, getRecipeFoodType, getEnSynonym } = require('../utils');
+const { autoAssignIcon, esc, uid, DEFAULT_ICONS, CATEGORIAS, autoAssignCategoria, getRecipeFoodType, getEnSynonym, weekdayIndex, countPlannedMeals, pickStartTab, plural, DAY_MS, HOUSE_LOCATIONS, getHouseLocation, matchHistoryRecipe, slotWasCooked, computeRecipeStats, timeAgoLabel, DEFAULT_RECURRING_EVERY, recurringDaysLeft, isRecurringDue, updateRecurringOnPurchase, updateHaveStats, usuallyHave, nextWeekStatus, countWeekStatuses } = require('../utils');
+
+// ---------------------------------------------------------------------------
+// UX helpers
+// ---------------------------------------------------------------------------
+
+describe('weekdayIndex', () => {
+    test('Monday → 0', () => { expect(weekdayIndex(new Date(2026, 9, 19))).toBe(0); });
+    test('Thursday → 3', () => { expect(weekdayIndex(new Date(2026, 9, 22))).toBe(3); });
+    test('Sunday → 6', () => { expect(weekdayIndex(new Date(2026, 9, 25))).toBe(6); });
+    test('defaults to today', () => { expect(weekdayIndex()).toBe((new Date().getDay() + 6) % 7); });
+});
+
+describe('countPlannedMeals', () => {
+    test('counts only filled days', () => {
+        expect(countPlannedMeals({ '0': 'a', '1': null, '3': 'b', '4': '' })).toBe(2);
+    });
+    test('handles empty / missing week', () => {
+        expect(countPlannedMeals({})).toBe(0);
+        expect(countPlannedMeals(null)).toBe(0);
+    });
+});
+
+describe('pickStartTab', () => {
+    test('opens the list when there is something to buy', () => { expect(pickStartTab(3)).toBe('lista'); });
+    test('opens the week otherwise', () => { expect(pickStartTab(0)).toBe('semana'); });
+});
+
+describe('plural', () => {
+    test('singular', () => { expect(plural(1, 'refeição', 'refeições')).toBe('1 refeição'); });
+    test('plural', () => { expect(plural(0, 'refeição', 'refeições')).toBe('0 refeições'); });
+    test('plural many', () => { expect(plural(4, 'item', 'itens')).toBe('4 itens'); });
+});
 
 // ---------------------------------------------------------------------------
 // autoAssignIcon
@@ -135,9 +167,9 @@ describe('uid', () => {
 // ---------------------------------------------------------------------------
 
 describe('CATEGORIAS', () => {
-    test('is an array of 9 strings', () => {
+    test('is an array of 10 strings', () => {
         expect(Array.isArray(CATEGORIAS)).toBe(true);
-        expect(CATEGORIAS).toHaveLength(9);
+        expect(CATEGORIAS).toHaveLength(10);
         CATEGORIAS.forEach(function(c) { expect(typeof c).toBe('string'); });
     });
     test('last item is "Outros"', () => {
@@ -186,6 +218,181 @@ describe('autoAssignCategoria', () => {
     test('Milk → Lacticínios', () => { expect(autoAssignCategoria('Milk')).toBe('Lacticínios'); });
     test('Cheese → Lacticínios', () => { expect(autoAssignCategoria('Cheese')).toBe('Lacticínios'); });
     test('Bread → Pão e Sobremesas', () => { expect(autoAssignCategoria('Bread')).toBe('Pão e Sobremesas'); });
+    // Household items
+    test.each([
+        'Papel higiénico', 'Guardanapos', 'Rolo de cozinha', 'Detergente loiça', 'Lixívia',
+        'Sacos do lixo', 'Esponjas', 'Gel de banho', 'Champô', 'Pasta de dentes', 'Toalhitas'
+    ])('%s → Casa e Higiene', (n) => { expect(autoAssignCategoria(n)).toBe('Casa e Higiene'); });
+    test('pasta (food) still → Massas e Conservas', () => { expect(autoAssignCategoria('Pasta')).toBe('Massas e Conservas'); });
+    test('sal still → Condimentos', () => { expect(autoAssignCategoria('Sal')).toBe('Condimentos'); });
+});
+
+// ---------------------------------------------------------------------------
+// Weekly cycle helpers
+// ---------------------------------------------------------------------------
+
+const NOW = Date.parse('2026-10-23T12:00:00Z');
+const daysAgo = (n) => new Date(NOW - n * DAY_MS).toISOString();
+const entry = (n, slots) => ({ date: daysAgo(n), week: slots });
+const cooked = (name, status) => ({ day: 'X', recipe: { name: name }, status: status });
+
+describe('getHouseLocation', () => {
+    test('dairy → frigo', () => { expect(getHouseLocation('Lacticínios')).toBe('frigo'); });
+    test('fruit → frescos', () => { expect(getHouseLocation('Fruta')).toBe('frescos'); });
+    test('pasta → despensa', () => { expect(getHouseLocation('Massas e Conservas')).toBe('despensa'); });
+    test('household → casa', () => { expect(getHouseLocation('Casa e Higiene')).toBe('casa'); });
+    test('unknown → outros', () => { expect(getHouseLocation('???')).toBe('outros'); });
+    test('every category has a location', () => {
+        CATEGORIAS.forEach((c) => {
+            expect(HOUSE_LOCATIONS.some((l) => l.cats.indexOf(c) !== -1)).toBe(true);
+        });
+    });
+});
+
+describe('matchHistoryRecipe', () => {
+    const recipes = { a: { name: 'Bolonhesa' }, b: { name: 'Frango' } };
+    test('by id', () => { expect(matchHistoryRecipe({ id: 'b', name: 'zzz' }, recipes)).toBe('b'); });
+    test('by name (case-insensitive) when id missing', () => { expect(matchHistoryRecipe({ name: ' bolonhesa ' }, recipes)).toBe('a'); });
+    test('falls back to name when id was deleted', () => { expect(matchHistoryRecipe({ id: 'gone', name: 'Frango' }, recipes)).toBe('b'); });
+    test('null when unknown', () => { expect(matchHistoryRecipe({ name: 'Pizza' }, recipes)).toBeNull(); });
+    test('null for empty slot', () => { expect(matchHistoryRecipe(null, recipes)).toBeNull(); });
+});
+
+describe('slotWasCooked', () => {
+    test('legacy slot without status counts', () => { expect(slotWasCooked(cooked('A'))).toBe(true); });
+    test('done counts', () => { expect(slotWasCooked(cooked('A', 'done'))).toBe(true); });
+    test('skip does not count', () => { expect(slotWasCooked(cooked('A', 'skip'))).toBe(false); });
+    test('out does not count', () => { expect(slotWasCooked(cooked('A', 'out'))).toBe(false); });
+    test('empty day does not count', () => { expect(slotWasCooked({ day: 'X', recipe: null })).toBe(false); });
+});
+
+describe('computeRecipeStats', () => {
+    const recipes = {
+        bol: { name: 'Bolonhesa' },
+        fra: { name: 'Frango' },
+        las: { name: 'Lasanha' },
+        nov: { name: 'Nova', createdAt: daysAgo(3) },
+        pin: { name: 'Bacalhau', tier: 'pin' },
+        arc: { name: 'Caril', tier: 'archive' }
+    };
+    const history = [
+        entry(7,  [cooked('Bolonhesa'), cooked('Frango', 'skip'), cooked('Caril')]),
+        entry(14, [cooked('Bolonhesa'), cooked('Frango')]),
+        entry(21, [cooked('Bolonhesa'), cooked('Caril'), cooked('Caril')]),
+        entry(300, [cooked('Lasanha')])
+    ];
+    const stats = computeRecipeStats(recipes, history, NOW);
+
+    test('counts only cooked days', () => {
+        expect(stats.bol.count).toBe(3);
+        expect(stats.fra.count).toBe(1);
+    });
+    test('lastCooked is the most recent cooked entry', () => {
+        expect(stats.bol.lastCooked).toBe(Date.parse(daysAgo(7)));
+        expect(stats.fra.lastCooked).toBe(Date.parse(daysAgo(14)));
+    });
+    test('3+ times in 12 weeks → habitual', () => { expect(stats.bol.tier).toBe('habitual'); });
+    test('cooked recently but rarely → asvezes', () => { expect(stats.fra.tier).toBe('asvezes'); });
+    test('not cooked for > 6 months → arquivo', () => { expect(stats.las.tier).toBe('arquivo'); });
+    test('new recipe never cooked stays visible', () => { expect(stats.nov.tier).toBe('asvezes'); });
+    test('pin overrides computed tier', () => {
+        expect(stats.pin.tier).toBe('habitual');
+        expect(stats.pin.manual).toBe('pin');
+        expect(stats.pin.autoTier).toBe('arquivo');
+    });
+    test('archive overrides even a habitual recipe', () => {
+        expect(stats.arc.autoTier).toBe('habitual');
+        expect(stats.arc.tier).toBe('arquivo');
+    });
+    test('without any history nothing is archived', () => {
+        const s = computeRecipeStats({ x: { name: 'X' } }, [], NOW);
+        expect(s.x.tier).toBe('asvezes');
+    });
+    test('ignores entries with invalid dates', () => {
+        const s = computeRecipeStats({ x: { name: 'X' } }, [{ date: 'nope', week: [cooked('X')] }], NOW);
+        expect(s.x.count).toBe(0);
+    });
+});
+
+describe('timeAgoLabel', () => {
+    test('null → nunca', () => { expect(timeAgoLabel(null, NOW)).toBe('nunca'); });
+    test('today', () => { expect(timeAgoLabel(NOW - 3600e3, NOW)).toBe('hoje'); });
+    test('yesterday', () => { expect(timeAgoLabel(NOW - DAY_MS, NOW)).toBe('ontem'); });
+    test('days', () => { expect(timeAgoLabel(NOW - 5 * DAY_MS, NOW)).toBe('há 5 dias'); });
+    test('weeks', () => { expect(timeAgoLabel(NOW - 21 * DAY_MS, NOW)).toBe('há 3 sem'); });
+    test('months', () => { expect(timeAgoLabel(NOW - 90 * DAY_MS, NOW)).toBe('há 3 meses'); });
+});
+
+describe('recurring household items', () => {
+    test('never checked → due', () => {
+        expect(isRecurringDue(undefined, NOW)).toBe(true);
+        expect(isRecurringDue({ every: 10 }, NOW)).toBe(true);
+    });
+    test('bought recently → not due, days left', () => {
+        const rec = { every: 21, lastBought: NOW - 7 * DAY_MS };
+        expect(isRecurringDue(rec, NOW)).toBe(false);
+        expect(recurringDaysLeft(rec, NOW)).toBe(14);
+    });
+    test('a recent check postpones the reminder', () => {
+        const rec = { every: 21, lastBought: NOW - 40 * DAY_MS, lastChecked: NOW - 2 * DAY_MS };
+        expect(isRecurringDue(rec, NOW)).toBe(false);
+    });
+    test('overdue → due', () => {
+        expect(isRecurringDue({ every: 21, lastBought: NOW - 22 * DAY_MS }, NOW)).toBe(true);
+    });
+    test('first purchase keeps the default interval', () => {
+        const r = updateRecurringOnPurchase(undefined, NOW);
+        expect(r.every).toBe(DEFAULT_RECURRING_EVERY);
+        expect(r.lastBought).toBe(NOW);
+        expect(r.lastChecked).toBe(NOW);
+    });
+    test('learns from the observed gap', () => {
+        const r = updateRecurringOnPurchase({ every: 21, lastBought: NOW - 13 * DAY_MS }, NOW);
+        expect(r.every).toBe(17);
+    });
+    test('interval is clamped', () => {
+        expect(updateRecurringOnPurchase({ every: 3, lastBought: NOW - 1 * DAY_MS }, NOW).every).toBe(3);
+        expect(updateRecurringOnPurchase({ every: 120, lastBought: NOW - 400 * DAY_MS }, NOW).every).toBe(120);
+    });
+    test('same-day repeat purchase does not change the interval', () => {
+        expect(updateRecurringOnPurchase({ every: 21, lastBought: NOW - 3600e3 }, NOW).every).toBe(21);
+    });
+    test('does not mutate the input', () => {
+        const rec = { every: 21, lastBought: NOW - 13 * DAY_MS };
+        updateRecurringOnPurchase(rec, NOW);
+        expect(rec.every).toBe(21);
+    });
+});
+
+describe('usuallyHave / updateHaveStats', () => {
+    test('needs at least 3 reviews', () => {
+        let s = updateHaveStats(undefined, true);
+        s = updateHaveStats(s, true);
+        expect(usuallyHave(s)).toBe(false);
+        s = updateHaveStats(s, true);
+        expect(usuallyHave(s)).toBe(true);
+    });
+    test('below 70 % → false', () => { expect(usuallyHave({ seen: 10, have: 6 })).toBe(false); });
+    test('at 70 % → true', () => { expect(usuallyHave({ seen: 10, have: 7 })).toBe(true); });
+    test('sliding window caps seen at 10', () => {
+        const s = updateHaveStats({ seen: 10, have: 10 }, false);
+        expect(s.seen).toBe(10);
+        expect(s.have).toBe(9);
+    });
+    test('undefined → false', () => { expect(usuallyHave(undefined)).toBe(false); });
+});
+
+describe('week status helpers', () => {
+    test('nextWeekStatus cycles done → skip → out → done', () => {
+        expect(nextWeekStatus('done')).toBe('skip');
+        expect(nextWeekStatus('skip')).toBe('out');
+        expect(nextWeekStatus('out')).toBe('done');
+        expect(nextWeekStatus(undefined)).toBe('done');
+    });
+    test('countWeekStatuses', () => {
+        const e = { week: [cooked('A'), cooked('B', 'skip'), cooked('C', 'out'), cooked('D', 'done'), { day: 'X', recipe: null }] };
+        expect(countWeekStatuses(e)).toEqual({ done: 2, skip: 1, out: 1 });
+    });
 });
 
 // ---------------------------------------------------------------------------

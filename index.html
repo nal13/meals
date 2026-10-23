@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Planeador de Refeicoes</title>
+    <title>Planeador de Refeições</title>
     <meta name="theme-color" content="#0969da">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-capable" content="yes">
@@ -11,7 +11,7 @@
     <meta name="apple-mobile-web-app-title" content="Refeições">
     <link rel="manifest" href="manifest.json">
     <link rel="apple-touch-icon" href="icon-192.png">
-    <link rel="stylesheet" href="style.css?v=6">
+    <link rel="stylesheet" href="style.css?v=8">
 </head>
 <body>
 
@@ -22,7 +22,8 @@
 <style>@keyframes spin{to{transform:rotate(360deg)}}</style>
 
 <header>
-    <h1>Planeador de Refeicoes</h1>
+    <h1 id="header-title">Planeador de Refeições</h1>
+    <span id="sync-status" class="sync-status" title="Estado da ligação">● Sincronizado</span>
 </header>
 
 <datalist id="ing-datalist"></datalist>
@@ -32,13 +33,22 @@
 
         <!-- TAB: LISTA -->
         <section id="section-lista">
-            <h2>Lista</h2>
-            <div class="subtab-actions" style="justify-content:space-between">
-                <div style="display:flex;gap:.5rem">
+            <div class="subtab-actions" id="shopping-actions" style="justify-content:space-between">
+                <div style="display:flex;gap:.5rem;flex-wrap:wrap">
                     <button class="btn-outline" id="show-shop-add-btn" onclick="toggleShopAdd(true)">+ Ingrediente</button>
                     <button class="btn-outline" id="edit-list-btn">&#x270E; Editar</button>
+                    <button class="btn-outline" id="household-btn" title="Papel higiénico, detergente, guardanapos…">🧴 Casa <span class="count-badge hidden" id="household-btn-count"></span></button>
                 </div>
-                <button class="btn-outline" id="clear-list-btn">Limpar</button>
+                <button class="btn-ghost-danger" id="clear-list-btn">Limpar lista</button>
+            </div>
+            <button type="button" id="household-banner" class="household-banner hidden">
+                <span id="household-banner-text"></span>
+                <span class="household-banner-cta">Verificar &#x203a;</span>
+            </button>
+            <button type="button" id="running-out-btn" class="running-out-btn">⚠️ Está a acabar alguma coisa? Acrescenta já</button>
+            <div id="shopping-progress" class="shop-progress hidden">
+                <div class="shop-progress-label"><span id="shopping-progress-text"></span></div>
+                <div class="progress-track"><div class="progress-fill" id="shopping-progress-fill"></div></div>
             </div>
             <div id="shopping-add-row" class="shopping-add-row hidden">
                 <input type="text" id="shop-add-name" placeholder="Ingrediente" class="shop-add-input">
@@ -46,25 +56,31 @@
                 <button class="btn-primary" id="shop-add-btn">+</button>
                 <button class="btn-icon" onclick="toggleShopAdd(false)">✕</button>
             </div>
-            <div id="shopping-empty" class="empty-msg">Clica em "Gerar Lista" para criar a lista a partir da semana atual.</div>
+            <div id="shopping-empty" class="empty-state">
+                <div class="empty-state-icon">🛒</div>
+                <p class="empty-state-title">A lista está vazia</p>
+                <p class="empty-state-text">Escolhe as refeições na Semana e gera a lista a partir daí — ou adiciona ingredientes soltos acima.</p>
+                <button class="btn-primary" id="shopping-empty-go-week">🗓 Ir para a Semana</button>
+            </div>
             <ul id="shopping-list"></ul>
         </section>
 
         <!-- TAB: SEMANA -->
         <section id="section-semana">
-            <h2>Semana</h2>
-            <div class="subtab-actions" style="margin-bottom:.85rem;justify-content:space-between">
-                <button class="btn-outline" id="gerar-lista-btn">&#x1F4CB; Gerar Lista</button>
+            <div class="subtab-actions week-toolbar">
+                <span class="week-summary" id="week-summary"></span>
                 <div style="display:flex;gap:.5rem">
                     <button class="btn-outline" id="historico-week-btn">&#x1F4C5; Hist&#xF3;rico</button>
-                    <button class="btn-outline" id="clear-week-btn">Limpar</button>
+                    <button class="btn-ghost-danger" id="clear-week-btn" title="Regista o que fizeram, guarda no histórico e limpa">Fechar semana</button>
                 </div>
             </div>
             <div id="semana-historico-panel" class="hidden"></div>
+            <div id="quicklist" class="quicklist"></div>
             <div class="week-grid" id="week-grid"></div>
 
             <div class="semana-extras-section" id="semana-extras-section">
-                <h3 class="semana-extras-title">Ingredientes Extra</h3>
+                <h3 class="semana-extras-title">Ingredientes extra</h3>
+                <p class="semana-extras-hint">Tudo o que não está nas receitas — fruta, lanches, básicos da casa… Entra na lista quando a gerares.</p>
                 <div class="semana-extras-search-wrap">
                     <input type="text" id="semana-extras-input" placeholder="Pesquisar ingrediente..." autocomplete="off" class="semana-extras-input">
                     <ul id="semana-extras-suggestions" class="semana-extras-suggestions hidden"></ul>
@@ -82,6 +98,10 @@
                 </div>
                 <div id="semana-extras-chips" class="semana-extras-chips"></div>
             </div>
+
+            <div class="week-cta-bar" id="week-cta-bar">
+                <button class="btn-primary week-cta" id="gerar-lista-btn">🛒 Gerar lista</button>
+            </div>
         </section>
 
         <!-- TAB: RECEITAS -->
@@ -90,17 +110,19 @@
             <div class="subtab-bar">
                 <button class="subtab-btn active" data-subtab="receitas-grid">Receitas</button>
                 <button class="subtab-btn" data-subtab="ingredientes-dict">Ingredientes</button>
-                <button class="subtab-btn" data-subtab="import-json">Import</button>
+                <button class="subtab-btn" data-subtab="import-json">⚙ Gestão</button>
             </div>
 
             <!-- Subtab: Receitas -->
             <div id="subtab-receitas-grid">
-                <div class="subtab-actions" style="justify-content:space-between">
-                    <button class="btn-outline" id="open-add-recipe">+ Nova Receita</button>
-                    <button class="btn-outline" id="dedup-btn" title="Remover receitas duplicadas e ajustar ícones">&#x1F527; Limpar duplicadas</button>
+                <div class="subtab-actions recipes-toolbar">
+                    <input type="search" id="recipes-search" class="picker-search recipes-search" placeholder="🔍 Pesquisar receita ou ingrediente…" autocomplete="off">
+                    <button class="btn-primary" id="open-add-recipe">+ Nova</button>
                 </div>
+                <div id="recipes-tier-seg" class="tier-seg"></div>
                 <div id="recipes-grid" class="recipes-grid"></div>
-                <div id="recipes-empty" class="empty-msg hidden">Ainda nao tens receitas.</div>
+                <div id="recipes-empty" class="empty-msg hidden">Ainda não tens receitas.</div>
+                <div id="recipes-noresults" class="empty-msg hidden">Nenhuma receita encontrada.</div>
             </div>
 
             <!-- Subtab: Ingredientes -->
@@ -120,17 +142,19 @@
                         <option value="Massas e Conservas">Massas e Conservas</option>
                         <option value="Pão e Sobremesas">Pão e Sobremesas</option>
                         <option value="Condimentos">Condimentos</option>
+                        <option value="Casa e Higiene">Casa e Higiene</option>
                         <option value="Outros">Outros</option>
                     </select>
                     <button class="btn-primary" id="ing-dict-add-btn">+</button>
                     <button class="btn-icon" onclick="toggleIngAdd(false)">✕</button>
                 </div>
+                <div id="por-arrumar" class="por-arrumar hidden"></div>
                 <!-- Header row -->
                 <div class="ing-dict-header">
                     <span class="ing-dict-header-name"></span>
                     <span class="ing-dict-header-btns"></span>
                 </div>
-                <div id="ing-dict-empty" class="empty-msg">Sem ingredientes no dicionario.</div>
+                <div id="ing-dict-empty" class="empty-msg">Sem ingredientes no dicionário.</div>
                 <div id="ing-dict-list" class="ing-dict-list"></div>
             </div>
 
@@ -146,6 +170,10 @@
                         <p class="subtab-desc">Exporta todas as receitas e ingredientes para um ficheiro CSV (backup / edição).</p>
                         <button class="btn-outline" id="export-btn" style="margin-top:.5rem">&#x2B07; Exportar CSV</button>
                     </div>
+                    <div>
+                        <p class="subtab-desc">Remove receitas com o mesmo nome e volta a atribuir ícones automáticos (já corre sozinho ao abrir a app).</p>
+                        <button class="btn-outline" id="dedup-btn" style="margin-top:.5rem">&#x1F527; Limpar duplicadas</button>
+                    </div>
                 </div>
             </div>
         </section>
@@ -158,7 +186,7 @@
     <div class="modal">
         <div class="modal-header">
             <h3 id="modal-title">Nova Receita</h3>
-            <button class="modal-close" id="modal-close">X</button>
+            <button class="modal-close" id="modal-close" aria-label="Fechar">&#x2715;</button>
         </div>
         <div class="modal-body">
             <label>Nome da receita</label>
@@ -197,7 +225,7 @@
                 <h3 id="view-title"></h3>
 
             </div>
-            <button class="modal-close" id="view-close">X</button>
+            <button class="modal-close" id="view-close" aria-label="Fechar">&#x2715;</button>
         </div>
         <div class="modal-body" id="view-body"></div>
         <div class="modal-footer">
@@ -214,7 +242,7 @@
         <div class="picker-handle"></div>
         <div class="picker-header">
             <span id="picker-title">Escolher refeição</span>
-            <button class="modal-close" id="picker-close">&#x2715;</button>
+            <button class="modal-close" id="picker-close" aria-label="Fechar">&#x2715;</button>
         </div>
         <div class="picker-controls">
             <input type="search" id="picker-search" class="picker-search" placeholder="Pesquisar receita…" autocomplete="off">
@@ -234,7 +262,7 @@
     <div class="modal modal-wide">
         <div class="modal-header">
             <h3>Importar do JSON</h3>
-            <button class="modal-close" id="import-close">X</button>
+            <button class="modal-close" id="import-close" aria-label="Fechar">&#x2715;</button>
         </div>
         <div class="modal-body" id="import-body">
             <!-- preenchido dinamicamente -->
@@ -250,28 +278,77 @@
 <div class="modal-overlay hidden" id="gerar-overlay">
     <div class="modal modal-wide">
         <div class="modal-header">
-            <h3>Remove ingredientes que tens em casa</h3>
-            <button class="modal-close" id="gerar-close">X</button>
+            <div>
+                <h3>O que já têm em casa?</h3>
+                <div class="gerar-counter" id="gerar-counter"></div>
+            </div>
+            <button class="modal-close" id="gerar-close" aria-label="Fechar">&#x2715;</button>
         </div>
         <div class="modal-body" id="gerar-body">
             <!-- preenchido dinamicamente -->
         </div>
         <div class="modal-footer">
             <button class="btn-outline" id="gerar-cancel">Cancelar</button>
-            <button class="btn-primary" id="gerar-aprovar">&#x2713; Aprovar Lista</button>
+            <button class="btn-primary" id="gerar-aprovar">&#x2713; Confirmar lista</button>
+        </div>
+    </div>
+</div>
+
+<!-- Modal Artigos de casa -->
+<div class="modal-overlay hidden" id="household-overlay">
+    <div class="modal modal-wide">
+        <div class="modal-header">
+            <h3>🧴 Artigos de casa</h3>
+            <button class="modal-close" id="household-close" aria-label="Fechar">&#x2715;</button>
+        </div>
+        <div class="modal-body">
+            <p class="gerar-intro">Coisas que não são de receitas mas acabam — a app pergunta quando já deve estar na hora e aprende quanto duram.</p>
+            <div id="household-list" class="household-list"></div>
+            <div class="household-add">
+                <div class="household-add-row">
+                    <input type="text" id="household-add-input" class="shop-add-input" placeholder="Está a acabar… (ex.: guardanapos)" autocomplete="off">
+                    <button class="btn-primary" id="household-add-btn">+ Lista</button>
+                </div>
+                <label class="household-add-remember"><input type="checkbox" id="household-add-remember"> Lembrar regularmente (artigo de casa)</label>
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn-primary" id="household-done">Feito</button>
+        </div>
+    </div>
+</div>
+
+<!-- Modal Fechar semana -->
+<div class="modal-overlay hidden" id="week-close-overlay">
+    <div class="modal">
+        <div class="modal-header">
+            <div>
+                <h3>Como correu a semana?</h3>
+                <div class="gerar-counter" id="week-close-summary"></div>
+            </div>
+            <button class="modal-close" id="week-close-x" aria-label="Fechar">&#x2715;</button>
+        </div>
+        <div class="modal-body">
+            <p class="gerar-intro">Toca num dia para mudar: ✅ feito → ❌ não feito → 🛵 comemos fora. Isto ajuda a app a perceber quais são as vossas receitas habituais.</p>
+            <div id="week-close-list" class="wc-list"></div>
+            <label class="wc-carry hidden" id="week-close-carry-wrap"><input type="checkbox" id="week-close-carry"> Levar as não feitas para a próxima semana (os ingredientes já devem estar em casa)</label>
+        </div>
+        <div class="modal-footer">
+            <button class="btn-outline" id="week-close-cancel">Cancelar</button>
+            <button class="btn-primary" id="week-close-confirm">Fechar semana</button>
         </div>
     </div>
 </div>
 
 <!-- Bottom nav (visivel apenas em mobile) -->
 <nav class="bottom-nav" id="bottom-nav">
-    <button class="tab-btn active" data-tab="lista">
-        <span class="tab-icon">🛒</span>
-        <span class="tab-label">Lista</span>
-    </button>
     <button class="tab-btn" data-tab="semana">
         <span class="tab-icon">🗓</span>
         <span class="tab-label">Semana</span>
+    </button>
+    <button class="tab-btn" data-tab="lista">
+        <span class="tab-icon">🛒<span class="tab-badge hidden" id="lista-badge"></span></span>
+        <span class="tab-label">Lista</span>
     </button>
     <button class="tab-btn" data-tab="receitas">
         <span class="tab-icon">🍽</span>
@@ -279,10 +356,15 @@
     </button>
 </nav>
 
+<div id="toast" class="toast hidden" role="status" aria-live="polite">
+    <span id="toast-msg" class="toast-msg"></span>
+    <button id="toast-action" class="toast-action hidden"></button>
+</div>
+
 <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-firestore-compat.js"></script>
-<script src="utils.js?v=6"></script>
-<script src="script.js?v=6"></script>
+<script src="utils.js?v=8"></script>
+<script src="script.js?v=8"></script>
 <script>
     if ('serviceWorker' in navigator && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
         window.addEventListener('load', function () {

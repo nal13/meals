@@ -42,26 +42,40 @@ Aplicação web PWA para uso pessoal/familiar que resolve o problema de planear 
 
 ## 5. Âmbito — v1.x (atual)
 
+### 5.0 Navegação e feedback
+
+- Abas: **Semana · Lista · Receitas**. Ao abrir, a app vai para a Lista se houver itens por comprar; caso contrário abre a Semana
+- Badge na aba Lista com o nº de itens por comprar
+- Ações destrutivas (apagar receita/ingrediente, limpar lista/semana, remover item) não pedem confirmação: mostram um toast com **Desfazer**
+- Erros de validação aparecem como toast (sem `alert()`)
+
 ### 5.1 Módulo: Semana
 
-- Grelha com os 7 dias da semana (Segunda a Domingo)
-- Cada dia tem um slot para selecionar uma receita via dropdown
-- Ao selecionar: mostra ícone e nome da receita; oculta o dropdown
+- Grelha com os 7 dias da semana (Segunda a Domingo); o dia de hoje fica destacado
+- Uma refeição por dia (cozinha-se para o jantar e o almoço do dia seguinte); não é esperado planear sempre os 7 dias
+- Cada dia tem um botão "Escolher refeição" que abre o picker
+- Ao selecionar: mostra ícone e nome da receita
 - Botão para limpar o slot
 - Clicar no nome abre o modal de visualização da receita
+- Botão fixo **Gerar lista** com resumo (nº de refeições + extras)
+- **Toque rápido (quicklist):** fila de chips com as receitas *Habituais*; tocar num chip "arma" a receita e o toque seguinte num dia atribui-a (com Desfazer). Chip **Repetir semana passada** preenche só os dias vazios
+- **Fechar semana:** modal "Como correu a semana?" onde cada dia alterna ✅ feito → ❌ não feito → 🛵 comemos fora. As não feitas podem transitar para a semana seguinte (mesmo dia), marcadas como *transitadas* (`week.carried`); depois guarda no histórico e limpa
 
-### 5.2 Módulo: Extra Semanal & Sopa
+### 5.2 Módulo: Ingredientes extra
 
-- Secção para ingredientes fora das receitas da semana (ex: sopas diárias, lanches)
-- Cada linha: ingrediente + quantidade, com flag `canExtra` ou `canSopa` no dicionário
-- Máx. 10 entradas por lista
+- Secção para tudo o que não está nas receitas (fruta, lanches, básicos da casa…)
+- Cada linha: ingrediente + quantidade
 - Contribui para a lista de compras gerada
 
 ### 5.3 Módulo: Lista de Compras
 
 - Botão **Gerar Lista** abre modal de revisão com todos os ingredientes das receitas da semana + extras + sopa
 - O utilizador pode ajustar quantidades e remover itens antes de confirmar
+- A revisão está agrupada por **sítio da casa** (Frigorífico, Fruta e legumes, Despensa, Casa e higiene, Outros) para seguir uma volta pela casa; tocar na linha marca/desmarca "já temos"
+- Itens pré-riscados automaticamente: **costumam ter** (≥ 3 revisões e ≥ 70 % das vezes em casa — `ingredients.haveStats`) e **da semana passada** (só usados por receitas transitadas). A confirmação atualiza `haveStats`
+- No topo, **Artigos de casa a verificar** (os que já passaram do intervalo) com escolha ✓ Temos / 🛒 Comprar
 - A lista gerada é persistida no Firestore
+- **Artigos de casa** (papel higiénico, detergente…): ingredientes da categoria *Casa e Higiene* ou com `recurring`. Botão **🧴 Casa** + banner "N artigos de casa a verificar" abrem um painel com barra de duração, ✓ Temos / 🛒 Precisamos e campo **"Está a acabar…"**. Ao marcar como comprado, o intervalo aprende-se: `every = média(every, dias desde a última compra)`, entre 3 e 120 dias (padrão 21)
 - Adição manual de ingredientes avulsos
 - Marcar itens como comprados (move para secção "Já comprado")
 - Modo de edição inline de quantidades
@@ -76,6 +90,10 @@ Aplicação web PWA para uso pessoal/familiar que resolve o problema de planear 
 - Modal de visualização completa (ícone grande + lista de ingredientes)
 - Botão **Limpar duplicadas:** remove receitas com o mesmo nome e re-aplica ícones
 - Deduplicação silenciosa automática ao carregar a app
+- **Níveis automáticos** a partir do histórico: ⭐ *Habituais* (feitas ≥ 3× nas últimas 12 semanas), 🔄 *Às vezes* (feitas nos últimos 6 meses, ou criadas há < 30 dias) e 🗄️ *Arquivo* (o resto — nunca se apaga nada). Pode-se **Fixar nas Habituais** ou **Arquivar** manualmente (`recipe.tier = 'pin' | 'archive'`)
+- O picker mostra Habituais e Às vezes; o Arquivo fica recolhido em "Ver arquivo (N)". A pesquisa procura em tudo
+- Cada receita mostra "Feita N× · última vez há X"
+- **Rascunhos:** é possível guardar uma receita só com o nome (pill "rascunho"); os ingredientes acrescentam-se depois
 
 ### 5.5 Módulo: Ingredientes
 
@@ -84,11 +102,14 @@ Aplicação web PWA para uso pessoal/familiar que resolve o problema de planear 
 - Editar nome (propaga a todas as receitas que o usam)
 - Apagar (só permitido se não for usado em nenhuma receita)
 - Mostra em que receitas cada ingrediente aparece
+- Categoria **Casa e Higiene** (🧴) para artigos não alimentares; ingredientes antigos em "Outros" que encaixem são migrados automaticamente
+- Caixa **Por arrumar**: ingredientes em "Outros" com chips de categoria — um toque arruma (5 de cada vez)
 
 ### 5.6 Módulo: Histórico
 
-- Snapshot automático da semana ao clicar **Limpar e Registar**
-- Guarda: data, receitas por dia, lista de ingredientes gerada
+- Snapshot automático da semana ao clicar **Fechar semana**
+- Guarda: data, receitas por dia (com `id` e estado `done | skip | out`), lista de ingredientes gerada
+- Mostra o resumo ✅/❌/🛵 da semana e o estado de cada dia; registos antigos sem estado contam como feitos
 - Navegação paginada entre snapshots (máx. 3 em v1, ilimitado planeado)
 
 ### 5.7 Módulo: Exportar / Importar
@@ -110,7 +131,7 @@ Browser (PWA)
 ├── style.css           — estilos + responsivo + safe-area iOS
 ├── utils.js            — funções puras: uid(), esc(), autoAssignIcon()
 ├── script.js           — toda a lógica de UI + Firestore listeners
-├── sw.js               — Service Worker: cache offline (mp-v4)
+├── sw.js               — Service Worker: cache offline (mp-v8)
 └── manifest.json       — configuração PWA (ícones, nome, theme)
 
 Firebase Firestore (base de dados em tempo real)
@@ -124,7 +145,7 @@ Firebase Firestore (base de dados em tempo real)
 
 Testes (Node.js)
 ├── package.json        — Jest como test runner
-└── tests/utils.test.js — 32 testes: autoAssignIcon, esc, uid
+└── tests/utils.test.js — 153 testes: ícones, categorias, ciclo semanal (níveis, artigos de casa, "já temos", estados)
 ```
 
 ### Fluxo de dados
@@ -173,9 +194,23 @@ O Service Worker faz cache de todos os ficheiros estáticos na instalação. O F
     "0": "rec_abc123",
     "1": null,
     "2": "rec_xyz789"
-  }
+  },
+  "carried": { "2": "rec_xyz789" }
 }
 ```
+
+`carried` marca os dias cuja receita transitou da semana anterior (os ingredientes já devem estar em casa).
+
+### Campos do ciclo semanal
+
+| Onde | Campo | Significado |
+|------|-------|-------------|
+| `recipes/{id}` | `tier` | `'pin'` (fixada nas Habituais) ou `'archive'`; ausente = automático |
+| `recipes/{id}` | `createdAt` | ISO; receitas novas ficam em "Às vezes" durante 30 dias |
+| `data/ingredients.dict[id]` | `recurring` | `{ every, lastBought, lastChecked }` (ms) — artigos de casa |
+| `data/ingredients.dict[id]` | `haveStats` | `{ seen, have }` — janela de 10 revisões do "já temos" |
+| `data/shopping.extra[]` | `ingId` | opcional, liga o item avulso ao dicionário |
+| `data/history.items[].week[]` | `recipe.id`, `status` | id da receita e `'done' \| 'skip' \| 'out'` |
 
 ---
 

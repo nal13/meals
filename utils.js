@@ -38,6 +38,7 @@ var CATEGORIAS = [
     'Massas e Conservas',
     'Pão e Sobremesas',
     'Condimentos',
+    'Casa e Higiene',
     'Outros'
 ];
 
@@ -50,10 +51,13 @@ var CATEGORIA_ICONS = {
     'Massas e Conservas': '🍚',
     'Pão e Sobremesas':   '🍞',
     'Condimentos':        '🧂',
+    'Casa e Higiene':     '🧴',
     'Outros':             '🛒'
 };
 
 var CATEGORIA_RULES = [
+    // Household items first: "pasta de dentes" must not fall into Massas, "sal" in "sabonete liquido", etc.
+    [/papel|guardanapo|rolo de cozinha|detergente|lixivia|amaciador|lava.?(loica|tudo|vidros)|esfregao|esponja|sacos? (do|de) lixo|sacos? congela|pelicula|aluminio|sabonete|gel de banho|champo|shampoo|condicionador|pasta (de|dos) dentes|escova de dentes|fio dental|elixir|desodorizante|toalhitas|fraldas?|pensos|tampoes|cotonetes|algodao|lenco|pilhas|lampada|ambientador|limpa|insecticida|tissue|napkin|toilet|detergent|bleach|sponge|trash bag|bin bag|soap|toothpaste|deodorant|diaper|wipes/i, 'Casa e Higiene'],
     [/frango|galinha|peru|pato|coelho|borrego|vitela|vaca\b|porco|entrecosto|costeleta|lombinho|secreto|bife|carne\b|atum|salmao|bacalhau|camarao|lulas|amijoas|peixe|pescada|tamboril|robalo|dourada|truta|sardinha|marisco|linguado|febras|cachaco|chicken|turkey|duck|rabbit|lamb\b|beef|pork\b|ribs\b|steak|tuna|salmon|cod\b|shrimp|prawn|squid|clam\b|fish\b|sardine|seafood/i, 'Carne e Peixe'],
     [/leite|natas\b|iogurte|manteiga|requeijao|queijo|cream.?cheese|mascarpone|kefir|ovo\b|ovos\b|milk\b|cream\b|yogur[th]|butter\b|cheese|egg\b|eggs\b/i,                                                                                         'Lacticínios'],
     [/fiambre|presunto|chourico|salame|mortadela|bacon|morcela|linguica|paio|salpicao|alheira|farinheira|ham\b|salami|chorizo|sausage|pepperoni|prosciutto/i,                                                                                       'Charcutaria'],
@@ -302,7 +306,203 @@ function getEnSynonym(name) {
     return PT_EN_SYNONYMS[key] || null;
 }
 
+/**
+ * Weekday index used by the week grid: Monday = 0 … Sunday = 6.
+ */
+function weekdayIndex(date) {
+    var d = date || new Date();
+    return (d.getDay() + 6) % 7;
+}
+
+/**
+ * Number of days in the week object that have a recipe assigned.
+ */
+function countPlannedMeals(week) {
+    if (!week) return 0;
+    return Object.keys(week).filter(function(k) { return !!week[k]; }).length;
+}
+
+/**
+ * Tab to open on start: the shopping list when there is something left to buy,
+ * otherwise the week planner.
+ */
+function pickStartTab(pendingShoppingCount) {
+    return pendingShoppingCount > 0 ? 'lista' : 'semana';
+}
+
+/**
+ * Portuguese pluralisation helper: plural(1,'refeição','refeições') → '1 refeição'.
+ */
+function plural(n, one, many) {
+    return n + ' ' + (n === 1 ? one : many);
+}
+
+// ---- Weekly cycle helpers (tiers, household reminders, review stats) --------
+
+var DAY_MS = 24 * 60 * 60 * 1000;
+
+var TIER_RULES = {
+    habitualMinCount: 3,     // cooked at least this many times…
+    habitualWindowDays: 84,  // …in the last 12 weeks
+    sometimesWindowDays: 182,
+    newRecipeGraceDays: 30
+};
+
+/**
+ * Where an ingredient is usually kept at home, used to order the "Gerar lista"
+ * review so it follows a walk through the house rather than the supermarket.
+ */
+var HOUSE_LOCATIONS = [
+    { id: 'frigo',    label: 'Frigorífico',      icon: '🧊', cats: ['Lacticínios', 'Charcutaria', 'Carne e Peixe'] },
+    { id: 'frescos',  label: 'Fruta e legumes',  icon: '🥬', cats: ['Legumes e Vegetais', 'Fruta'] },
+    { id: 'despensa', label: 'Despensa',         icon: '🥫', cats: ['Massas e Conservas', 'Condimentos', 'Pão e Sobremesas'] },
+    { id: 'casa',     label: 'Casa e higiene',   icon: '🧴', cats: ['Casa e Higiene'] },
+    { id: 'outros',   label: 'Outros',           icon: '🛒', cats: ['Outros'] }
+];
+
+function getHouseLocation(categoria) {
+    for (var i = 0; i < HOUSE_LOCATIONS.length; i++) {
+        if (HOUSE_LOCATIONS[i].cats.indexOf(categoria) !== -1) return HOUSE_LOCATIONS[i].id;
+    }
+    return 'outros';
+}
+
+/** Finds the recipe id for a history slot recipe ({ id?, name }), by id first, then by name. */
+function matchHistoryRecipe(slotRecipe, recipes) {
+    if (!slotRecipe || !recipes) return null;
+    if (slotRecipe.id && recipes[slotRecipe.id]) return slotRecipe.id;
+    var key = (slotRecipe.name || '').trim().toLowerCase();
+    if (!key) return null;
+    var ids = Object.keys(recipes);
+    for (var i = 0; i < ids.length; i++) {
+        if (((recipes[ids[i]] && recipes[ids[i]].name) || '').trim().toLowerCase() === key) return ids[i];
+    }
+    return null;
+}
+
+/** A history slot counts as cooked unless it was explicitly marked as skipped or eaten out. */
+function slotWasCooked(slot) {
+    return !!(slot && slot.recipe) && (!slot.status || slot.status === 'done');
+}
+
+/**
+ * Computes usage stats and the automatic tier for every recipe.
+ * Tiers: 'habitual' | 'asvezes' | 'arquivo'. A manual recipe.tier of 'pin' or
+ * 'archive' overrides the computed value (pinned → habitual).
+ * Returns { rid: { count, countRecent, lastCooked, tier, autoTier, manual } }.
+ */
+function computeRecipeStats(recipes, history, nowMs) {
+    var now = nowMs || Date.now();
+    var stats = {};
+    Object.keys(recipes || {}).forEach(function(rid) {
+        stats[rid] = { count: 0, countRecent: 0, lastCooked: null };
+    });
+    (history || []).forEach(function(entry) {
+        var t = Date.parse(entry && entry.date);
+        if (isNaN(t)) return;
+        (entry.week || []).forEach(function(slot) {
+            if (!slotWasCooked(slot)) return;
+            var rid = matchHistoryRecipe(slot.recipe, recipes);
+            if (!rid) return;
+            var s = stats[rid];
+            s.count++;
+            if (now - t <= TIER_RULES.habitualWindowDays * DAY_MS) s.countRecent++;
+            if (s.lastCooked === null || t > s.lastCooked) s.lastCooked = t;
+        });
+    });
+    var hasHistory = (history || []).length > 0;
+    Object.keys(stats).forEach(function(rid) {
+        var s = stats[rid];
+        var r = recipes[rid] || {};
+        var created = Date.parse(r.createdAt);
+        var auto;
+        if (s.countRecent >= TIER_RULES.habitualMinCount) auto = 'habitual';
+        else if (s.lastCooked !== null && now - s.lastCooked <= TIER_RULES.sometimesWindowDays * DAY_MS) auto = 'asvezes';
+        else if (!hasHistory) auto = 'asvezes';
+        else if (!isNaN(created) && now - created <= TIER_RULES.newRecipeGraceDays * DAY_MS) auto = 'asvezes';
+        else auto = 'arquivo';
+        s.autoTier = auto;
+        s.manual = r.tier === 'pin' || r.tier === 'archive' ? r.tier : null;
+        s.tier = r.tier === 'pin' ? 'habitual' : r.tier === 'archive' ? 'arquivo' : auto;
+    });
+    return stats;
+}
+
+/** Short Portuguese "há X" label for a past timestamp. */
+function timeAgoLabel(ts, nowMs) {
+    if (ts === null || ts === undefined || isNaN(ts)) return 'nunca';
+    var days = Math.floor(((nowMs || Date.now()) - ts) / DAY_MS);
+    if (days <= 0) return 'hoje';
+    if (days === 1) return 'ontem';
+    if (days < 14) return 'há ' + days + ' dias';
+    if (days < 60) return 'há ' + Math.round(days / 7) + ' sem';
+    return 'há ' + Math.round(days / 30) + ' meses';
+}
+
+var DEFAULT_RECURRING_EVERY = 21;
+
+/** Days until a recurring household item should be checked again (≤ 0 means due). */
+function recurringDaysLeft(rec, nowMs) {
+    var r = rec || {};
+    var every = r.every || DEFAULT_RECURRING_EVERY;
+    var base = Math.max(r.lastBought || 0, r.lastChecked || 0);
+    if (!base) return 0;
+    return Math.ceil(every - ((nowMs || Date.now()) - base) / DAY_MS);
+}
+
+function isRecurringDue(rec, nowMs) {
+    return recurringDaysLeft(rec, nowMs) <= 0;
+}
+
+/**
+ * Records a purchase of a recurring item and learns its real interval
+ * (average of the previous estimate and the observed gap, clamped to 3–120 days).
+ */
+function updateRecurringOnPurchase(rec, nowMs) {
+    var now = nowMs || Date.now();
+    var r = Object.assign({ every: DEFAULT_RECURRING_EVERY }, rec || {});
+    if (r.lastBought) {
+        var gap = (now - r.lastBought) / DAY_MS;
+        if (gap >= 1) r.every = Math.min(120, Math.max(3, Math.round((r.every + gap) / 2)));
+    }
+    r.lastBought = now;
+    r.lastChecked = now;
+    return r;
+}
+
+/** Records one "Gerar lista" review of an ingredient: hadIt = removed because it was at home. */
+function updateHaveStats(stats, hadIt) {
+    var seen = ((stats && stats.seen) || 0) + 1;
+    var have = ((stats && stats.have) || 0) + (hadIt ? 1 : 0);
+    // Keep a sliding window of ~10 reviews so habits can change.
+    if (seen > 10) { have = Math.round(have * 10 / seen); seen = 10; }
+    return { seen: seen, have: have };
+}
+
+/** True when an ingredient was at home in most recent reviews (≥ 3 reviews, ≥ 70 %). */
+function usuallyHave(stats) {
+    return !!stats && stats.seen >= 3 && stats.have / stats.seen >= 0.7;
+}
+
+var WEEK_STATUSES = ['done', 'skip', 'out'];
+
+/** Cycles the end-of-week status of a day: feito → não feito → comemos fora → feito. */
+function nextWeekStatus(status) {
+    var i = WEEK_STATUSES.indexOf(status);
+    return WEEK_STATUSES[(i + 1) % WEEK_STATUSES.length];
+}
+
+/** Counts statuses of a history entry's days (legacy entries count as done). */
+function countWeekStatuses(entry) {
+    var out = { done: 0, skip: 0, out: 0 };
+    ((entry && entry.week) || []).forEach(function(slot) {
+        if (!slot || !slot.recipe) return;
+        out[slot.status && out[slot.status] !== undefined ? slot.status : 'done']++;
+    });
+    return out;
+}
+
 // CommonJS export (used by Jest tests); no-op in browser
 if (typeof module !== 'undefined') {
-    module.exports = { DEFAULT_ICONS: DEFAULT_ICONS, ICON_RULES: ICON_RULES, CATEGORIAS: CATEGORIAS, CATEGORIA_ICONS: CATEGORIA_ICONS, CATEGORIA_RULES: CATEGORIA_RULES, PT_EN_SYNONYMS: PT_EN_SYNONYMS, autoAssignIcon: autoAssignIcon, autoAssignCategoria: autoAssignCategoria, getEnSynonym: getEnSynonym, esc: esc, uid: uid, slugId: slugId, getRecipeFoodType: getRecipeFoodType };
+    module.exports = { DEFAULT_ICONS: DEFAULT_ICONS, ICON_RULES: ICON_RULES, CATEGORIAS: CATEGORIAS, CATEGORIA_ICONS: CATEGORIA_ICONS, CATEGORIA_RULES: CATEGORIA_RULES, PT_EN_SYNONYMS: PT_EN_SYNONYMS, autoAssignIcon: autoAssignIcon, autoAssignCategoria: autoAssignCategoria, getEnSynonym: getEnSynonym, esc: esc, uid: uid, slugId: slugId, getRecipeFoodType: getRecipeFoodType, weekdayIndex: weekdayIndex, countPlannedMeals: countPlannedMeals, pickStartTab: pickStartTab, plural: plural, DAY_MS: DAY_MS, TIER_RULES: TIER_RULES, HOUSE_LOCATIONS: HOUSE_LOCATIONS, getHouseLocation: getHouseLocation, matchHistoryRecipe: matchHistoryRecipe, slotWasCooked: slotWasCooked, computeRecipeStats: computeRecipeStats, timeAgoLabel: timeAgoLabel, DEFAULT_RECURRING_EVERY: DEFAULT_RECURRING_EVERY, recurringDaysLeft: recurringDaysLeft, isRecurringDue: isRecurringDue, updateRecurringOnPurchase: updateRecurringOnPurchase, updateHaveStats: updateHaveStats, usuallyHave: usuallyHave, nextWeekStatus: nextWeekStatus, countWeekStatuses: countWeekStatuses };
 }

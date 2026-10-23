@@ -12,6 +12,8 @@ Aplicação web PWA para planear refeições semanais, gerir receitas e gerar li
 - Botão **+ Escolher** abre um picker com pesquisa e filtros (Peixe / Carne / Vegetariano)
 - Botão para remover a refeição do slot
 - Clicar no nome da receita abre o modal de visualização
+- **Toque rápido**: chips com as receitas habituais — toca no prato e depois no dia; ou **Repetir semana passada**
+- **Fechar semana**: marca cada dia como ✅ feito / ❌ não feito / 🛵 comemos fora; as não feitas podem passar para a semana seguinte
 
 ### ➕ Extra
 - Secção para refeições fora da semana normal (ex: lanches, sobremesas frequentes)
@@ -24,6 +26,8 @@ Aplicação web PWA para planear refeições semanais, gerir receitas e gerar li
 - Adição manual de ingredientes
 - Marcar itens como feitos (oculta da lista)
 - Botão **Limpar** — limpa a semana e lista de compras
+- Revisão "O que já têm em casa?" organizada por sítio da casa, com itens que **costumam ter** e **da semana passada** já riscados
+- **🧴 Artigos de casa** (papel higiénico, detergente…): a app lembra quando verificar, aprende quanto tempo duram e tem um atalho **"Está a acabar…"**
 
 ### 📖 Receitas
 - Grelha com cards de todas as receitas
@@ -34,16 +38,19 @@ Aplicação web PWA para planear refeições semanais, gerir receitas e gerar li
 - Modal para visualizar receita completa
 - **Auto-icon**: ícone/emoji atribuído automaticamente com base no nome e ingredientes da receita
 - **Limpar duplicadas**: botão para remover receitas duplicadas e corrigir ícones (também corre silenciosamente ao carregar a app)
+- **Habituais / Às vezes / Arquivo**: calculado a partir do histórico (≥ 3× em 12 semanas = habitual); pode-se fixar ou arquivar à mão — nada se perde
+- **Rascunhos**: guardar uma receita só com o nome e completar depois
 
 ### 🧅 Ingredientes
 - Dicionário centralizado de ingredientes
 - Todos os ingredientes das receitas têm de existir no dicionário
 - Mostra em que receitas cada ingrediente é usado
+- Caixa **Por arrumar** para ir categorizando o que está em "Outros" com um toque
 
 ### 📋 Registo
 - Histórico das semanas anteriores (máx. 30 registos)
-- Botão **Limpar e Registar** — guarda snapshot da semana atual e limpa tudo
-- Cada registo mostra data, dias da semana e extras
+- Botão **Fechar semana** — regista o que foi feito, guarda snapshot da semana atual e limpa
+- Cada registo mostra data, dias da semana (com estado ✅/❌/🛵) e lista
 
 ### 💾 Exportar / Importar
 - **Exportar** — descarrega ficheiro `.json` com todas as receitas e ingredientes
@@ -113,7 +120,7 @@ meal-planner/
 ├── generate-icons.py         — script para regenerar os ícones PNG
 ├── rebuild.py                — utilitário de build
 ├── template_importacao.json  — template para importar receitas
-├── tests/utils.test.js       — testes Jest (62 testes)
+├── tests/utils.test.js       — testes Jest (153 testes)
 ├── package.json              — dependências de desenvolvimento (Jest)
 ├── AGENTS.md                 — guia para agentes AI
 ├── PRD.md                    — product requirements document

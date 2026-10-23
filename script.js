@@ -1,6 +1,6 @@
 'use strict';
 
-var DAYS = ['Segunda','Terca','Quarta','Quinta','Sexta','Sabado','Domingo'];
+var DAYS = ['Segunda','Terça','Quarta','Quinta','Sexta','Sábado','Domingo'];
 
 // ---- Firebase ---------------------------------------------------------------
 
@@ -32,7 +32,8 @@ var shoppingDone  = {};
 var generatedFromWeek = [];
 var weekExtras        = []; // { id, ingId, name } — extras added in Semana tab, included on Gerar Lista
 var weekTempRecipes   = {}; // { tempId: { name, icon, ingredients:[{ingId?,name?,qty}] } }
-var weekHistory = [];  // last 3 snapshots, most-recent first
+var weekCarried       = {}; // { dayIdx: recipeId } — carried over from last week (ingredients probably at home)
+var weekHistory = [];  // last 20 snapshots, most-recent first
 var historyIdx  = 0;
 var pendingPickerDay = null;
 var pendingNewRecipeDay = null;
@@ -40,6 +41,18 @@ var pendingNewRecipeName = '';
 var _pickerFilter    = 'all';
 var _pickerQuery     = '';
 var _pickerDebounce  = null;
+var _pickerShowArchive = false;
+var _armedRecipe     = null; // quicklist: recipe chosen, waiting for a day
+
+var TIER_LABELS = {
+    habitual: '\u2b50 Habituais',
+    asvezes:  '\ud83d\udd04 \u00c0s vezes',
+    arquivo:  '\ud83d\uddc4\ufe0f Arquivo'
+};
+
+function getRecipeStats() {
+    return computeRecipeStats(recipes, weekHistory, Date.now());
+}
 
 var _loaded  = { recipes:false, week:false, ingredients:false, shopping:false, history:false };
 var appReady = false;
@@ -52,10 +65,13 @@ function _checkReady() {
         migrateIngredientsToIngId();
         autoCategorizeIngredients();
         buildWeekGrid();
+        renderQuicklist();
         renderShoppingList();
+        updateHouseholdBanner();
         renderSemanaExtrasList();
         renderRecipesTab();
         renderHistorico();
+        switchTab(pickStartTab(getPendingShoppingCount()));
         // Auto-clean duplicates and fix icons silently on every load
         setTimeout(deduplicateAndFixIconsSilent, 500);
     }
@@ -67,21 +83,22 @@ db.collection('recipes').onSnapshot(function(snap) {
         else recipes[ch.doc.id] = ch.doc.data();
     });
     if (!_loaded.recipes) { _loaded.recipes = true; _checkReady(); return; }
-    if (appReady) { refreshAllSelects(); renderRecipesGrid(); }
+    if (appReady) { refreshAllSelects(); renderRecipesGrid(); renderQuicklist(); }
 });
 
 db.collection('data').doc('week').onSnapshot(function(doc) {
     week        = (doc.exists && doc.data().days)   ? doc.data().days   : {};
     weekExtras  = (doc.exists && doc.data().extras) ? doc.data().extras : [];
     weekTempRecipes = (doc.exists && doc.data().tempRecipes) ? doc.data().tempRecipes : {};
+    weekCarried = (doc.exists && doc.data().carried) ? doc.data().carried : {};
     if (!_loaded.week) { _loaded.week = true; _checkReady(); return; }
-    if (appReady) { refreshAllSelects(); renderSemanaExtrasList(); }
+    if (appReady) { refreshAllSelects(); renderSemanaExtrasList(); renderQuicklist(); }
 });
 
 db.collection('data').doc('ingredients').onSnapshot(function(doc) {
     ingredients = (doc.exists && doc.data().dict) ? doc.data().dict : {};
     if (!_loaded.ingredients) { _loaded.ingredients = true; _checkReady(); return; }
-    if (appReady) { renderIngredientsDict(); }
+    if (appReady) { renderIngredientsDict(); updateHouseholdBanner(); }
 });
 
 db.collection('data').doc('shopping').onSnapshot(function(doc) {
@@ -90,13 +107,13 @@ db.collection('data').doc('shopping').onSnapshot(function(doc) {
     shoppingDone      = d.done      || {};
     generatedFromWeek = d.generated || [];
     if (!_loaded.shopping) { _loaded.shopping = true; _checkReady(); return; }
-    if (appReady) { renderShoppingList(); }
+    if (appReady) { renderShoppingList(); updateHouseholdBanner(); }
 });
 
 db.collection('data').doc('history').onSnapshot(function(doc) {
     weekHistory = (doc.exists && doc.data().items) ? doc.data().items : [];
     if (!_loaded.history) { _loaded.history = true; _checkReady(); return; }
-    if (appReady) { renderHistorico(); }
+    if (appReady) { renderHistorico(); renderRecipesGrid(); renderQuicklist(); }
 });
 
 function saveRecipe(id, data)  { db.collection('recipes').doc(id).set(data).catch(console.error); }
@@ -118,7 +135,8 @@ function pruneWeekTempRecipes(days) {
 
 function saveWeek(w) {
     pruneWeekTempRecipes(w || {});
-    db.collection('data').doc('week').set({ days: w, extras: weekExtras, tempRecipes: weekTempRecipes }).catch(console.error);
+    Object.keys(weekCarried).forEach(function(d) { if ((w || {})[d] !== weekCarried[d]) delete weekCarried[d]; });
+    db.collection('data').doc('week').set({ days: w, extras: weekExtras, tempRecipes: weekTempRecipes, carried: weekCarried }).catch(console.error);
 }
 function saveIngredients(dict) { db.collection('data').doc('ingredients').set({ dict: dict }).catch(console.error); }
 function saveShopping()        { db.collection('data').doc('shopping').set({ extra: shoppingExtra, done: shoppingDone, generated: generatedFromWeek }).catch(console.error); }
@@ -157,22 +175,232 @@ function createTempRecipeId() {
 
 // uid() and esc() are defined in utils.js
 
+// ---- Toast (non-blocking feedback + undo) -----------------------------------
+
+var _toastTimer = null;
+
+// opts: { type: 'error'|'success', actionLabel, onAction, duration }
+function showToast(msg, opts) {
+    var o = opts || {};
+    var el = document.getElementById('toast');
+    var msgEl = document.getElementById('toast-msg');
+    var actionBtn = document.getElementById('toast-action');
+    if (!el) return;
+    msgEl.textContent = msg;
+    el.className = 'toast' + (o.type ? ' toast-' + o.type : '');
+    if (o.onAction) {
+        actionBtn.textContent = o.actionLabel || 'Desfazer';
+        actionBtn.classList.remove('hidden');
+        actionBtn.onclick = function() {
+            hideToast();
+            o.onAction();
+        };
+    } else {
+        actionBtn.classList.add('hidden');
+        actionBtn.onclick = null;
+    }
+    clearTimeout(_toastTimer);
+    _toastTimer = setTimeout(hideToast, o.duration || (o.onAction ? 6000 : 3500));
+}
+
+function hideToast() {
+    var el = document.getElementById('toast');
+    if (el) el.classList.add('hidden');
+    clearTimeout(_toastTimer);
+}
+
+function showUndoToast(msg, undoFn) {
+    showToast(msg, { actionLabel: 'Desfazer', onAction: undoFn });
+}
+
+// ---- Sync status ------------------------------------------------------------
+
+(function() {
+    function update() {
+        var el = document.getElementById('sync-status');
+        if (!el) return;
+        var online = navigator.onLine;
+        el.textContent = online ? '\u25cf Sincronizado' : '\u25cf Offline';
+        el.classList.toggle('is-offline', !online);
+        el.title = online ? 'Alterações sincronizadas entre dispositivos' : 'Sem ligação — as alterações sincronizam quando voltar a ligação';
+    }
+    window.addEventListener('online', update);
+    window.addEventListener('offline', update);
+    update();
+})();
+
 // ---- Week grid --------------------------------------------------------------
 
 function buildWeekGrid() {
     var grid = document.getElementById('week-grid');
     grid.innerHTML = '';
+    var todayIdx = weekdayIndex();
     DAYS.forEach(function(day, idx) {
         var card = document.createElement('div');
-        card.className = 'day-card';
+        card.className = 'day-card' + (idx === todayIdx ? ' day-today' : '');
         card.id = 'day-card-' + idx;
         var nameEl = document.createElement('div');
         nameEl.className = 'day-name';
         nameEl.textContent = day;
+        if (idx === todayIdx) {
+            var todayTag = document.createElement('span');
+            todayTag.className = 'day-today-tag';
+            todayTag.textContent = 'Hoje';
+            nameEl.appendChild(todayTag);
+        }
         card.appendChild(nameEl);
         card.appendChild(buildDaySlot(idx));
+        // Quicklist: when a recipe is armed, tapping anywhere on a day assigns it.
+        card.addEventListener('click', (function(i) { return function(e) {
+            if (!_armedRecipe) return;
+            e.stopPropagation(); e.preventDefault();
+            assignArmedRecipe(i);
+        }; })(idx), true);
         grid.appendChild(card);
         refreshDayCard(idx);
+    });
+    updateWeekSummary();
+}
+
+function updateWeekSummary() {
+    var meals  = countPlannedMeals(week);
+    var extras = weekExtras.length;
+    var summary = document.getElementById('week-summary');
+    if (summary) {
+        summary.textContent = meals
+            ? plural(meals, 'refeição planeada', 'refeições planeadas')
+            : 'Nenhuma refeição planeada';
+    }
+    var cta = document.getElementById('gerar-lista-btn');
+    if (cta) {
+        var parts = [];
+        if (meals)  parts.push(plural(meals, 'refeição', 'refeições'));
+        if (extras) parts.push(plural(extras, 'extra', 'extras'));
+        cta.textContent = '\ud83d\uded2 Gerar lista' + (parts.length ? ' \u00b7 ' + parts.join(' + ') : '');
+        cta.disabled = !meals && !extras;
+    }
+}
+
+// ---- Quicklist (habituais) -----------------------------------------------------
+
+function getQuicklistIds(stats) {
+    var ids = Object.keys(recipes).filter(function(id) { return stats[id] && stats[id].tier === 'habitual'; });
+    ids.sort(function(a, b) { return stats[b].countRecent - stats[a].countRecent || recipes[a].name.localeCompare(recipes[b].name); });
+    if (ids.length < 4) {
+        // Not enough history yet: top up with the most cooked non-archived recipes.
+        var extra = Object.keys(recipes).filter(function(id) {
+            return ids.indexOf(id) === -1 && stats[id] && stats[id].count > 0 && stats[id].tier !== 'arquivo';
+        });
+        extra.sort(function(a, b) { return stats[b].count - stats[a].count; });
+        ids = ids.concat(extra.slice(0, 8 - ids.length));
+    }
+    return ids.slice(0, 12);
+}
+
+function renderQuicklist() {
+    var wrap = document.getElementById('quicklist');
+    if (!wrap) return;
+    wrap.innerHTML = '';
+    var stats = getRecipeStats();
+    var ids = getQuicklistIds(stats);
+    var inWeek = {};
+    Object.keys(week).forEach(function(d) { if (week[d]) inWeek[week[d]] = true; });
+
+    var head = document.createElement('div');
+    head.className = 'quicklist-head';
+    var title = document.createElement('span');
+    title.className = 'quicklist-title';
+    if (_armedRecipe && recipes[_armedRecipe]) {
+        title.textContent = '\ud83d\udc47 Toca no dia para ' + recipes[_armedRecipe].name;
+        title.classList.add('quicklist-armed-msg');
+        var cancel = document.createElement('button');
+        cancel.type = 'button';
+        cancel.className = 'quicklist-link';
+        cancel.textContent = 'Cancelar';
+        cancel.addEventListener('click', function() { disarmRecipe(); });
+        head.appendChild(title);
+        head.appendChild(cancel);
+    } else {
+        title.textContent = ids.length ? '\u26a1 Toque r\u00e1pido \u00b7 escolhe um prato e depois o dia' : '\u26a1 Toque r\u00e1pido';
+        head.appendChild(title);
+    }
+    wrap.appendChild(head);
+
+    var chips = document.createElement('div');
+    chips.className = 'quicklist-chips';
+    ids.forEach(function(id) {
+        var r = recipes[id];
+        var chip = document.createElement('button');
+        chip.type = 'button';
+        chip.className = 'filter-chip quick-chip' + (_armedRecipe === id ? ' active' : '') + (inWeek[id] ? ' quick-chip-inweek' : '');
+        chip.textContent = (r.icon || '\ud83c\udf7d\ufe0f') + ' ' + r.name + (inWeek[id] ? ' \u2713' : '');
+        chip.title = stats[id] ? 'Feita ' + stats[id].count + '\u00d7 \u00b7 \u00faltima vez ' + timeAgoLabel(stats[id].lastCooked) : '';
+        chip.addEventListener('click', function() {
+            if (_armedRecipe === id) { disarmRecipe(); return; }
+            _armedRecipe = id;
+            document.body.classList.add('quick-armed');
+            renderQuicklist();
+        });
+        chips.appendChild(chip);
+    });
+
+    var last = weekHistory[0];
+    var lastHasRecipes = !!last && (last.week || []).some(function(s) { return matchHistoryRecipe(s.recipe, recipes); });
+    if (lastHasRecipes) {
+        var rep = document.createElement('button');
+        rep.type = 'button';
+        rep.className = 'filter-chip quick-chip quick-chip-action';
+        rep.textContent = '\u21a9\ufe0f Repetir semana passada';
+        rep.addEventListener('click', repeatLastWeek);
+        chips.appendChild(rep);
+    }
+    if (!ids.length && !lastHasRecipes) {
+        var hint = document.createElement('p');
+        hint.className = 'quicklist-hint';
+        hint.textContent = 'Os pratos que fazem mais aparecem aqui depois de registarem algumas semanas.';
+        wrap.appendChild(hint);
+        return;
+    }
+    wrap.appendChild(chips);
+}
+
+function disarmRecipe() {
+    _armedRecipe = null;
+    document.body.classList.remove('quick-armed');
+    renderQuicklist();
+}
+
+function assignArmedRecipe(dayIdx) {
+    var rid = _armedRecipe;
+    if (!rid || !recipes[rid]) { disarmRecipe(); return; }
+    var prev = week[dayIdx] || null;
+    var prevTemp = isTempRecipeId(prev) && weekTempRecipes[prev] ? weekTempRecipes[prev] : null;
+    week[dayIdx] = rid;
+    saveWeek(week);
+    refreshDayCard(dayIdx);
+    disarmRecipe();
+    showUndoToast(recipes[rid].name + ' \u2192 ' + DAYS[dayIdx], function() {
+        if (prevTemp) weekTempRecipes[prev] = prevTemp;
+        week[dayIdx] = prev;
+        saveWeek(week); refreshDayCard(dayIdx); renderQuicklist();
+    });
+}
+
+function repeatLastWeek() {
+    var last = weekHistory[0];
+    if (!last) return;
+    var snap = Object.assign({}, week);
+    var filled = 0;
+    (last.week || []).forEach(function(slot, i) {
+        var rid = matchHistoryRecipe(slot.recipe, recipes);
+        if (rid && !week[String(i)]) { week[String(i)] = rid; filled++; }
+    });
+    if (!filled) { showToast('Os dias da semana passada j\u00e1 est\u00e3o preenchidos.'); return; }
+    saveWeek(week);
+    refreshAllSelects();
+    renderQuicklist();
+    showUndoToast(plural(filled, 'dia preenchido', 'dias preenchidos') + ' com a semana passada', function() {
+        week = snap; saveWeek(week); refreshAllSelects(); renderQuicklist();
     });
 }
 
@@ -183,7 +411,7 @@ function buildDaySlot(dayIdx) {
     var chooseBtn = document.createElement('button');
     chooseBtn.className = 'btn-choose-recipe';
     chooseBtn.dataset.day = dayIdx;
-    chooseBtn.textContent = '+ Escolher';
+    chooseBtn.textContent = '+ Escolher refeição';
     chooseBtn.addEventListener('click', (function(i) { return function() {
         openPicker(i);
     }; })(dayIdx));
@@ -209,10 +437,19 @@ function buildDaySlot(dayIdx) {
     clearBtn.className = 'btn-icon';
     clearBtn.textContent = '\u2715';
     clearBtn.title = 'Remover';
+    clearBtn.setAttribute('aria-label', 'Remover refeição');
     clearBtn.style.display = 'none';
     clearBtn.addEventListener('click', (function(i) { return function() {
+        var prev = week[i];
+        var prevTemp = isTempRecipeId(prev) && weekTempRecipes[prev] ? weekTempRecipes[prev] : null;
+        var prevRecipe = getWeekRecipeById(prev);
         week[i] = null;
-        saveWeek(week); refreshDayCard(i);
+        saveWeek(week); refreshDayCard(i); updateWeekSummary(); renderQuicklist();
+        showUndoToast((prevRecipe ? prevRecipe.name : 'Refeição') + ' removida de ' + DAYS[i], function() {
+            if (prevTemp) weekTempRecipes[prev] = prevTemp;
+            week[i] = prev;
+            saveWeek(week); refreshDayCard(i); updateWeekSummary(); renderQuicklist();
+        });
     }; })(dayIdx));
 
     info.appendChild(link);
@@ -223,6 +460,8 @@ function buildDaySlot(dayIdx) {
 
 function refreshAllSelects() {
     DAYS.forEach(function(_, idx) { refreshDayCard(idx); });
+    updateWeekSummary();
+    renderQuicklist();
 }
 
 function refreshDayCard(dayIdx) {
@@ -232,6 +471,9 @@ function refreshDayCard(dayIdx) {
     var link      = document.querySelector('.day-recipe-name[data-day="'+dayIdx+'"]');
     var clearBtn  = link ? link.nextElementSibling : null;
     var thumb     = document.querySelector('.slot-recipe-icon[data-day="'+dayIdx+'"]');
+    var card      = document.getElementById('day-card-' + dayIdx);
+    if (card) card.classList.toggle('day-filled', !!(rid && recipe));
+    if (card) card.classList.toggle('day-carried', !!rid && weekCarried[dayIdx] === rid);
     if (rid && recipe) {
         if (chooseBtn) chooseBtn.style.display = 'none';
         if (link) link.textContent = recipe.name;
@@ -243,6 +485,7 @@ function refreshDayCard(dayIdx) {
         if (clearBtn) clearBtn.style.display = 'none';
         if (thumb) thumb.classList.add('hidden');
     }
+    updateWeekSummary();
 }
 
 // ---- Recipe Picker ----------------------------------------------------------
@@ -251,6 +494,7 @@ function openPicker(dayIdx) {
     pendingPickerDay = dayIdx;
     _pickerFilter = 'all';
     _pickerQuery  = '';
+    _pickerShowArchive = false;
     document.getElementById('picker-title').textContent = 'Escolher \u2014 ' + DAYS[dayIdx];
     document.getElementById('picker-search').value = '';
     document.querySelectorAll('#picker-filters .filter-chip').forEach(function(btn) {
@@ -323,7 +567,7 @@ function renderPickerGrid(filter, query) {
         grid.appendChild(empty);
         return;
     }
-    ids.forEach(function(id) {
+    function appendCard(id) {
         var r = recipes[id];
         var card = document.createElement('div');
         card.className = 'recipe-card';
@@ -333,6 +577,7 @@ function renderPickerGrid(filter, query) {
             saveWeek(week);
             refreshDayCard(pendingPickerDay);
             closePicker();
+            renderQuicklist();
         }; })(id));
         var icon = document.createElement('span');
         icon.className = 'recipe-card-icon';
@@ -343,7 +588,38 @@ function renderPickerGrid(filter, query) {
         card.appendChild(icon);
         card.appendChild(name);
         grid.appendChild(card);
-    });
+    }
+    function appendSection(label) {
+        var h = document.createElement('div');
+        h.className = 'picker-section';
+        h.textContent = label;
+        grid.appendChild(h);
+    }
+    // While searching, show everything (archive included) in one list.
+    if (q) { ids.forEach(appendCard); return; }
+
+    var stats = getRecipeStats();
+    var byTier = { habitual: [], asvezes: [], arquivo: [] };
+    ids.forEach(function(id) { byTier[(stats[id] && stats[id].tier) || 'asvezes'].push(id); });
+    byTier.habitual.sort(function(a, b) { return stats[b].countRecent - stats[a].countRecent || recipes[a].name.localeCompare(recipes[b].name); });
+    if (byTier.habitual.length) { appendSection(TIER_LABELS.habitual); byTier.habitual.forEach(appendCard); }
+    if (byTier.asvezes.length)  { appendSection(TIER_LABELS.asvezes);  byTier.asvezes.forEach(appendCard); }
+    if (byTier.arquivo.length) {
+        if (_pickerShowArchive) {
+            appendSection(TIER_LABELS.arquivo);
+            byTier.arquivo.forEach(appendCard);
+        } else {
+            var more = document.createElement('button');
+            more.type = 'button';
+            more.className = 'picker-archive-btn';
+            more.textContent = '\ud83d\uddc4\ufe0f Ver arquivo (' + byTier.arquivo.length + ')';
+            more.addEventListener('click', function() {
+                _pickerShowArchive = true;
+                renderPickerGrid(_pickerFilter, _pickerQuery);
+            });
+            grid.appendChild(more);
+        }
+    }
 }
 
 document.getElementById('picker-close').addEventListener('click', closePicker);
@@ -417,7 +693,7 @@ function renderShoppingList() {
     });
     shoppingExtra.forEach(function(item) {
         var key = item.name.trim().toLowerCase();
-        if (!totals[key]) totals[key] = { name: item.name.trim(), qty: 0, sources: [], extraIds: [] };
+        if (!totals[key]) totals[key] = { name: item.name.trim(), qty: 0, sources: [], extraIds: [], ingId: item.ingId || null };
         totals[key].qty += parseFloat(item.qty) || 0;
         totals[key].extraIds = (totals[key].extraIds || []).concat(item.id);
     });
@@ -428,6 +704,9 @@ function renderShoppingList() {
 
     var active = allItems.filter(function(i) { return !shoppingDone[i.key]; });
     var done   = allItems.filter(function(i) { return  shoppingDone[i.key]; });
+
+    updateShoppingProgress(active.length, allItems.length);
+    if (typeof householdOverlay !== 'undefined') updateHouseholdBanner();
 
     if (!allItems.length) {
         emptyMsg.classList.remove('hidden');
@@ -445,16 +724,39 @@ function renderShoppingList() {
     }
 
     function removeItem(item) {
+        var snapGen   = generatedFromWeek.slice();
+        var snapExtra = shoppingExtra.slice();
+        var wasDone   = !!shoppingDone[item.key];
         generatedFromWeek = generatedFromWeek.filter(function(g) { return g.key !== item.key; });
         if (item.extraIds && item.extraIds.length) {
             shoppingExtra = shoppingExtra.filter(function(e) { return item.extraIds.indexOf(e.id) === -1; });
         }
+        if (shoppingDone[item.key]) delete shoppingDone[item.key];
+        saveShopping(); renderShoppingList();
+        showUndoToast(item.name + ' removido da lista', function() {
+            generatedFromWeek = snapGen; shoppingExtra = snapExtra;
+            if (wasDone) shoppingDone[item.key] = true;
+            saveShopping(); renderShoppingList();
+        });
+    }
+
+    function toggleDone(key) {
+        var it = allItems.filter(function(i) { return i.key === key; })[0];
+        if (shoppingDone[key]) { delete shoppingDone[key]; if (it) onShoppingItemUnbought(it); }
+        else { shoppingDone[key] = true; if (it) onShoppingItemBought(it); }
         saveShopping(); renderShoppingList();
     }
 
     function makeItem(item) {
         var li = document.createElement('li');
         li.className = 'shop-item' + (shoppingDone[item.key] ? ' shop-done' : '');
+        if (!listEditMode) {
+            li.classList.add('shop-item-tappable');
+            li.addEventListener('click', function(e) {
+                if (e.target.closest('button')) return;
+                toggleDone(item.key);
+            });
+        }
 
         var left = document.createElement('div');
         left.className = 'shop-item-left';
@@ -480,48 +782,63 @@ function renderShoppingList() {
         right.className = 'shop-item-right';
         var q = Math.round(item.qty * 1000) / 1000;
 
-        if (listEditMode && !shoppingDone[item.key]) {
-            // Stepper − qty +
-            var currentQty = q || 1;
-            var stepper = document.createElement('div');
-            stepper.className = 'shop-stepper';
-            var minusBtn = document.createElement('button');
-            minusBtn.className = 'stepper-btn'; minusBtn.textContent = '\u2212';
-            var qtySpan = document.createElement('span');
-            qtySpan.className = 'stepper-val'; qtySpan.textContent = currentQty;
-            var plusBtn = document.createElement('button');
-            plusBtn.className = 'stepper-btn'; plusBtn.textContent = '+';
-            minusBtn.addEventListener('click', function() {
-                if (currentQty > 0) { currentQty = Math.round((currentQty - 1) * 1000) / 1000; qtySpan.textContent = currentQty; updateItemQty(item, currentQty); }
-            });
-            plusBtn.addEventListener('click', function() {
-                currentQty = Math.round((currentQty + 1) * 1000) / 1000; qtySpan.textContent = currentQty; updateItemQty(item, currentQty);
-            });
-            stepper.appendChild(minusBtn); stepper.appendChild(qtySpan); stepper.appendChild(plusBtn);
-            right.appendChild(stepper);
+        if (listEditMode) {
+            if (!shoppingDone[item.key]) {
+                // Stepper − qty + only for active items while editing.
+                var currentQty = q || 1;
+                var stepper = document.createElement('div');
+                stepper.className = 'shop-stepper';
+                var minusBtn = document.createElement('button');
+                minusBtn.className = 'stepper-btn'; minusBtn.textContent = '\u2212';
+                var qtySpan = document.createElement('span');
+                qtySpan.className = 'stepper-val'; qtySpan.textContent = currentQty;
+                var plusBtn = document.createElement('button');
+                plusBtn.className = 'stepper-btn'; plusBtn.textContent = '+';
+                minusBtn.addEventListener('click', function() {
+                    if (currentQty > 0) { currentQty = Math.round((currentQty - 1) * 1000) / 1000; qtySpan.textContent = currentQty; updateItemQty(item, currentQty); }
+                });
+                plusBtn.addEventListener('click', function() {
+                    currentQty = Math.round((currentQty + 1) * 1000) / 1000; qtySpan.textContent = currentQty; updateItemQty(item, currentQty);
+                });
+                stepper.appendChild(minusBtn); stepper.appendChild(qtySpan); stepper.appendChild(plusBtn);
+                right.appendChild(stepper);
+            } else if (q > 0) {
+                var doneQtyEl = document.createElement('span');
+                doneQtyEl.className = 'shop-item-qty'; doneQtyEl.textContent = q;
+                right.appendChild(doneQtyEl);
+            }
+
+            var editRemoveBtn = document.createElement('button');
+            editRemoveBtn.className = 'btn-icon shop-remove';
+            editRemoveBtn.textContent = '\u2715';
+            editRemoveBtn.title = 'Remover';
+            editRemoveBtn.addEventListener('click', function() { removeItem(item); });
+            right.appendChild(editRemoveBtn);
         } else {
             if (q > 0) {
                 var qEl = document.createElement('span');
                 qEl.className = 'shop-item-qty'; qEl.textContent = q;
                 right.appendChild(qEl);
             }
-            var toggleBtn = document.createElement('button');
-            toggleBtn.className = 'btn-icon shop-toggle';
-            toggleBtn.textContent = shoppingDone[item.key] ? '\u21a9' : '\u2713';
-            toggleBtn.title = shoppingDone[item.key] ? 'Mostrar' : 'Marcar como comprado';
-            toggleBtn.addEventListener('click', (function(key) { return function() {
-                if (shoppingDone[key]) delete shoppingDone[key]; else shoppingDone[key] = true;
-                saveShopping(); renderShoppingList();
-            }; })(item.key));
-            right.appendChild(toggleBtn);
-        }
 
-        var removeBtn = document.createElement('button');
-        removeBtn.className = 'btn-icon shop-remove';
-        removeBtn.textContent = '\u2715';
-        removeBtn.title = 'Remover';
-        removeBtn.addEventListener('click', function() { removeItem(item); });
-        right.appendChild(removeBtn);
+            if (!shoppingDone[item.key]) {
+                // Single action in normal mode for active items: mark as bought.
+                var doneBtn = document.createElement('button');
+                doneBtn.className = 'btn-icon shop-toggle';
+                doneBtn.textContent = '\u2713';
+                doneBtn.title = 'Marcar como comprado';
+                doneBtn.addEventListener('click', function() { toggleDone(item.key); });
+                right.appendChild(doneBtn);
+            } else {
+                // Bought items can only be moved back to active list.
+                var undoBtn = document.createElement('button');
+                undoBtn.className = 'btn-icon shop-toggle';
+                undoBtn.textContent = '\u21a9';
+                undoBtn.title = 'Voltar para a lista';
+                undoBtn.addEventListener('click', function() { toggleDone(item.key); });
+                right.appendChild(undoBtn);
+            }
+        }
 
         li.appendChild(left); li.appendChild(right);
         return li;
@@ -539,17 +856,264 @@ function renderShoppingList() {
         if (!catItems.length) return;
         var header = document.createElement('li');
         header.className = 'shop-cat-header';
-        header.textContent = cat;
+        header.textContent = (CATEGORIA_ICONS[cat] ? CATEGORIA_ICONS[cat] + ' ' : '') + cat + ' \u00b7 ' + catItems.length;
         list.appendChild(header);
         catItems.forEach(function(item) { list.appendChild(makeItem(item)); });
     });
     if (done.length) {
         var sep = document.createElement('li');
-        sep.className = 'shop-separator'; sep.textContent = 'Ja comprado';
+        sep.className = 'shop-separator'; sep.textContent = '\u2714 J\u00e1 comprado \u00b7 ' + done.length;
         list.appendChild(sep);
         done.forEach(function(item) { list.appendChild(makeItem(item)); });
     }
 }
+
+function updateShoppingProgress(remaining, total) {
+    var wrap  = document.getElementById('shopping-progress');
+    var text  = document.getElementById('shopping-progress-text');
+    var fill  = document.getElementById('shopping-progress-fill');
+    var badge = document.getElementById('lista-badge');
+    var bought = total - remaining;
+    if (wrap) wrap.classList.toggle('hidden', !total);
+    if (text) {
+        text.textContent = !remaining && total
+            ? '\ud83c\udf89 Tudo comprado! (' + total + ')'
+            : bought + ' de ' + total + ' comprados \u00b7 ' + plural(remaining, 'falta', 'faltam');
+    }
+    if (fill) fill.style.width = (total ? Math.round(bought / total * 100) : 0) + '%';
+    if (badge) {
+        badge.textContent = remaining > 99 ? '99+' : String(remaining);
+        badge.classList.toggle('hidden', !remaining);
+    }
+    ['edit-list-btn', 'clear-list-btn'].forEach(function(id) {
+        var el = document.getElementById(id);
+        if (el) el.classList.toggle('hidden', !total);
+    });
+}
+
+function getPendingShoppingCount() {
+    var keys = {};
+    generatedFromWeek.forEach(function(i) { keys[i.name.trim().toLowerCase()] = true; });
+    shoppingExtra.forEach(function(i) { keys[i.name.trim().toLowerCase()] = true; });
+    return Object.keys(keys).filter(function(k) { return !shoppingDone[k]; }).length;
+}
+
+// ---- Household items (artigos de casa) ---------------------------------------
+
+function isHouseholdIng(id) {
+    var ing = ingredients[id];
+    if (!ing) return false;
+    if (ing.recurring && ing.recurring.off) return false;
+    return ing.categoria === 'Casa e Higiene' || !!ing.recurring;
+}
+
+function getHouseholdIds() {
+    var now = Date.now();
+    return Object.keys(ingredients).filter(isHouseholdIng).sort(function(a, b) {
+        var da = recurringDaysLeft(ingredients[a].recurring, now);
+        var dbl = recurringDaysLeft(ingredients[b].recurring, now);
+        if (da !== dbl) return da - dbl;
+        return ingredients[a].name.localeCompare(ingredients[b].name);
+    });
+}
+
+function getPendingShoppingKeys() {
+    var keys = {};
+    generatedFromWeek.forEach(function(i) { keys[i.name.trim().toLowerCase()] = true; });
+    shoppingExtra.forEach(function(i) { keys[i.name.trim().toLowerCase()] = true; });
+    return Object.keys(keys).filter(function(k) { return !shoppingDone[k]; });
+}
+
+function isOnShoppingList(id) {
+    return getPendingShoppingKeys().indexOf(ingredients[id].name.trim().toLowerCase()) !== -1;
+}
+
+function getDueHouseholdIds() {
+    var now = Date.now();
+    return getHouseholdIds().filter(function(id) {
+        return isRecurringDue(ingredients[id].recurring, now) && !isOnShoppingList(id);
+    });
+}
+
+var _recurringBeforeBuy = {}; // key -> previous recurring, so un-ticking an item restores it
+
+function onShoppingItemBought(item) {
+    var id = item.ingId || getIngByName(item.name);
+    if (!id || !isHouseholdIng(id)) return;
+    _recurringBeforeBuy[item.key] = ingredients[id].recurring || null;
+    ingredients[id].recurring = updateRecurringOnPurchase(ingredients[id].recurring);
+    saveIngredients(ingredients);
+}
+
+function onShoppingItemUnbought(item) {
+    var id = item.ingId || getIngByName(item.name);
+    if (!id || !(item.key in _recurringBeforeBuy)) return;
+    var prev = _recurringBeforeBuy[item.key];
+    if (prev) ingredients[id].recurring = prev;
+    else delete ingredients[id].recurring;
+    delete _recurringBeforeBuy[item.key];
+    saveIngredients(ingredients);
+}
+
+function addIngToShoppingList(id, source) {
+    var ing = ingredients[id];
+    if (!ing || isOnShoppingList(id)) return false;
+    var key = ing.name.trim().toLowerCase();
+    if (shoppingDone[key]) delete shoppingDone[key];
+    shoppingExtra.push({ id: uid(), name: ing.name, qty: 1, ingId: id });
+    saveShopping();
+    renderShoppingList();
+    return true;
+}
+
+function updateHouseholdBanner() {
+    var banner = document.getElementById('household-banner');
+    if (!banner) return;
+    var due = getDueHouseholdIds().length;
+    banner.classList.toggle('hidden', !due);
+    var txt = document.getElementById('household-banner-text');
+    if (txt) txt.textContent = '\u23f0 ' + plural(due, 'artigo de casa a verificar', 'artigos de casa a verificar');
+    var hb = document.getElementById('household-btn-count');
+    if (hb) { hb.textContent = due; hb.classList.toggle('hidden', !due); }
+}
+
+var householdOverlay = document.getElementById('household-overlay');
+
+function openHouseholdModal(focusRunningOut) {
+    renderHouseholdModal();
+    householdOverlay.classList.remove('hidden');
+    if (focusRunningOut) setTimeout(function() { document.getElementById('household-add-input').focus(); }, 50);
+}
+
+function closeHouseholdModal() { householdOverlay.classList.add('hidden'); }
+
+function renderHouseholdModal() {
+    var body = document.getElementById('household-list');
+    if (!body) return;
+    body.innerHTML = '';
+    var now = Date.now();
+    var ids = getHouseholdIds();
+    if (!ids.length) {
+        var empty = document.createElement('p');
+        empty.className = 'empty-msg';
+        empty.textContent = 'Ainda n\u00e3o h\u00e1 artigos de casa. Acrescenta em baixo coisas como papel higi\u00e9nico, guardanapos ou detergente \u2014 a app vai aprendendo de quanto em quanto tempo acabam.';
+        body.appendChild(empty);
+        return;
+    }
+    ids.forEach(function(id) {
+        var ing = ingredients[id];
+        var rec = ing.recurring || {};
+        var every = rec.every || DEFAULT_RECURRING_EVERY;
+        var left = recurringDaysLeft(rec, now);
+        var onList = isOnShoppingList(id);
+
+        var row = document.createElement('div');
+        row.className = 'hh-row' + (left <= 0 && !onList ? ' hh-due' : '');
+
+        var info = document.createElement('div');
+        info.className = 'hh-info';
+        var nm = document.createElement('div');
+        nm.className = 'hh-name';
+        nm.textContent = CATEGORIA_ICONS[ing.categoria] ? CATEGORIA_ICONS[ing.categoria] + ' ' + ing.name : ing.name;
+        info.appendChild(nm);
+        var bar = document.createElement('div');
+        bar.className = 'hh-bar';
+        var fill = document.createElement('div');
+        fill.className = 'hh-bar-fill';
+        var pct = Math.max(0, Math.min(100, Math.round(left / every * 100)));
+        fill.style.width = pct + '%';
+        if (pct <= 20) fill.classList.add('low');
+        bar.appendChild(fill);
+        info.appendChild(bar);
+        var meta = document.createElement('div');
+        meta.className = 'hh-meta';
+        var parts = [];
+        if (onList) parts.push('\ud83d\uded2 j\u00e1 est\u00e1 na lista');
+        else if (!rec.lastBought && !rec.lastChecked) parts.push('ainda por verificar');
+        else if (left <= 0) parts.push('verificar agora');
+        else parts.push('verificar daqui a ' + plural(left, 'dia', 'dias'));
+        parts.push('dura ~' + every + ' dias');
+        if (rec.lastBought) parts.push('comprado ' + timeAgoLabel(rec.lastBought, now));
+        meta.textContent = parts.join(' \u00b7 ');
+        info.appendChild(meta);
+        row.appendChild(info);
+
+        var btns = document.createElement('div');
+        btns.className = 'hh-btns';
+        var haveBtn = document.createElement('button');
+        haveBtn.type = 'button';
+        haveBtn.className = 'hh-choice hh-choice-have';
+        haveBtn.textContent = '\u2713 Temos';
+        haveBtn.title = 'Ainda h\u00e1 em casa \u2014 volta a perguntar mais tarde';
+        haveBtn.addEventListener('click', function() {
+            var prev = ing.recurring ? Object.assign({}, ing.recurring) : null;
+            ing.recurring = Object.assign({ every: DEFAULT_RECURRING_EVERY }, ing.recurring || {}, { lastChecked: Date.now() });
+            saveIngredients(ingredients);
+            renderHouseholdModal(); updateHouseholdBanner();
+            showUndoToast(ing.name + ': temos', function() {
+                if (prev) ing.recurring = prev; else delete ing.recurring;
+                saveIngredients(ingredients); renderHouseholdModal(); updateHouseholdBanner();
+            });
+        });
+        var buyBtn = document.createElement('button');
+        buyBtn.type = 'button';
+        buyBtn.className = 'hh-choice hh-choice-buy';
+        buyBtn.textContent = onList ? '\u2713 Na lista' : '\ud83d\uded2 Precisamos';
+        buyBtn.disabled = onList;
+        buyBtn.addEventListener('click', function() {
+            if (addIngToShoppingList(id, 'Casa')) {
+                renderHouseholdModal(); updateHouseholdBanner();
+                showToast(ing.name + ' adicionado \u00e0 lista', { type: 'success' });
+            }
+        });
+        btns.appendChild(haveBtn);
+        btns.appendChild(buyBtn);
+        row.appendChild(btns);
+        body.appendChild(row);
+    });
+}
+
+function addHouseholdOrRunningOut() {
+    var input = document.getElementById('household-add-input');
+    var name = input.value.trim();
+    if (!name) { input.focus(); return; }
+    var remember = document.getElementById('household-add-remember').checked;
+    var id = getIngByName(name);
+    if (!id) {
+        id = slugId(name, Object.keys(ingredients));
+        ingredients[id] = { name: name, categoria: autoAssignCategoria(name) };
+    }
+    if (remember && !isHouseholdIng(id)) {
+        ingredients[id].recurring = { every: DEFAULT_RECURRING_EVERY };
+    } else if (remember && ingredients[id].recurring && ingredients[id].recurring.off) {
+        delete ingredients[id].recurring.off;
+    }
+    saveIngredients(ingredients);
+    var added = addIngToShoppingList(id, 'Casa');
+    input.value = '';
+    renderHouseholdModal(); updateHouseholdBanner();
+    showToast(added ? ingredients[id].name + ' adicionado \u00e0 lista' : ingredients[id].name + ' j\u00e1 estava na lista', { type: 'success' });
+}
+
+(function initHousehold() {
+    if (!householdOverlay) return;
+    document.getElementById('household-btn').addEventListener('click', function() { openHouseholdModal(false); });
+    document.getElementById('household-banner').addEventListener('click', function() { openHouseholdModal(false); });
+    document.getElementById('running-out-btn').addEventListener('click', function() { openHouseholdModal(true); });
+    document.getElementById('household-close').addEventListener('click', closeHouseholdModal);
+    document.getElementById('household-done').addEventListener('click', closeHouseholdModal);
+    householdOverlay.addEventListener('click', function(e) { if (e.target === householdOverlay) closeHouseholdModal(); });
+    document.getElementById('household-add-btn').addEventListener('click', addHouseholdOrRunningOut);
+    document.getElementById('household-add-input').addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') addHouseholdOrRunningOut();
+    });
+    document.getElementById('household-add-input').addEventListener('input', function() {
+        var v = this.value.trim();
+        var id = v ? getIngByName(v) : null;
+        var cb = document.getElementById('household-add-remember');
+        cb.checked = id ? isHouseholdIng(id) : autoAssignCategoria(v) === 'Casa e Higiene';
+    });
+})();
 
 function toggleShopAdd(show) {
     document.getElementById('shopping-add-row').classList.toggle('hidden', !show);
@@ -562,10 +1126,15 @@ document.getElementById('shop-add-btn').addEventListener('click', function() {
     var qtyEl  = document.getElementById('shop-add-qty');
     var name   = nameEl.value.trim();
     if (!name) { nameEl.focus(); return; }
-    shoppingExtra.push({ id: uid(), name: name, qty: parseFloat(qtyEl.value) || 1 });
+    var newItem = { id: uid(), name: name, qty: parseFloat(qtyEl.value) || 1 };
+    var knownId = getIngByName(name);
+    if (knownId) newItem.ingId = knownId;
+    shoppingExtra.push(newItem);
     saveShopping(); nameEl.value = ''; qtyEl.value = '';
     toggleShopAdd(false);
     renderShoppingList();
+    updateHouseholdBanner();
+    showToast(name + ' adicionado \u00e0 lista', { type: 'success' });
 });
 
 document.getElementById('shop-add-name').addEventListener('keydown', function(e) {
@@ -579,7 +1148,7 @@ var listEditMode = false;
 document.getElementById('edit-list-btn').addEventListener('click', function() {
     listEditMode = !listEditMode;
     this.classList.toggle('btn-active', listEditMode);
-    this.textContent = listEditMode ? '\u2713 Editar' : '\u270E Editar';
+    this.textContent = listEditMode ? '\u2713 Concluir' : '\u270E Editar';
     renderShoppingList();
 });
 
@@ -589,6 +1158,7 @@ function renderSemanaExtrasList() {
     var wrap = document.getElementById('semana-extras-chips');
     if (!wrap) return;
     wrap.innerHTML = '';
+    updateWeekSummary();
     weekExtras.forEach(function(item) {
         var div = document.createElement('div');
         div.className = 'shop-item';
@@ -804,15 +1374,78 @@ function renderSemanaExtrasList() {
 
 function renderRecipesTab() { renderRecipesGrid(); renderIngredientsDict(); }
 
+var _recipesQuery = '';
+var _recipesTier  = null; // null = pick the first non-empty tier automatically
+
+function setRecipeTier(rid, tier) {
+    var r = recipes[rid];
+    if (!r) return;
+    var prev = r.tier || null;
+    var next = Object.assign({}, r);
+    if (tier) next.tier = tier; else delete next.tier;
+    recipes[rid] = next;
+    saveRecipe(rid, next);
+    renderRecipesGrid(); renderQuicklist();
+    var msg = tier === 'pin' ? r.name + ' fixada nas Habituais'
+            : tier === 'archive' ? r.name + ' arquivada'
+            : r.name + ' volta ao modo autom\u00e1tico';
+    showUndoToast(msg, function() { setRecipeTier(rid, prev); hideToast(); });
+}
+
+function renderRecipesTierSeg(counts, active) {
+    var seg = document.getElementById('recipes-tier-seg');
+    if (!seg) return;
+    seg.innerHTML = '';
+    ['habitual', 'asvezes', 'arquivo'].forEach(function(t) {
+        var b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'tier-seg-btn' + (t === active ? ' active' : '');
+        b.textContent = TIER_LABELS[t] + ' ' + counts[t];
+        b.addEventListener('click', function() { _recipesTier = t; renderRecipesGrid(); });
+        seg.appendChild(b);
+    });
+}
+
 function renderRecipesGrid() {
     var grid     = document.getElementById('recipes-grid');
     var emptyMsg = document.getElementById('recipes-empty');
+    var noRes    = document.getElementById('recipes-noresults');
     grid.innerHTML = '';
     var ids = Object.keys(recipes).sort(function(a,b) { return recipes[a].name.localeCompare(recipes[b].name); });
-    if (!ids.length) { emptyMsg.classList.remove('hidden'); return; }
+    if (!ids.length) { emptyMsg.classList.remove('hidden'); if (noRes) noRes.classList.add('hidden'); return; }
     emptyMsg.classList.add('hidden');
+    var stats = getRecipeStats();
+    var counts = { habitual: 0, asvezes: 0, arquivo: 0 };
+    ids.forEach(function(rid) { counts[stats[rid].tier]++; });
+    var tier = _recipesTier || (counts.habitual ? 'habitual' : counts.asvezes ? 'asvezes' : 'arquivo');
+    var q = _recipesQuery.trim().toLowerCase();
+    var seg = document.getElementById('recipes-tier-seg');
+    if (seg) seg.classList.toggle('hidden', !!q);
+    renderRecipesTierSeg(counts, tier);
+    if (q) {
+        ids = ids.filter(function(rid) {
+            var r = recipes[rid];
+            if (r.name.toLowerCase().indexOf(q) !== -1) return true;
+            return (r.ingredients || []).some(function(i) {
+                return (getIngName(i.ingId) || i.name || '').toLowerCase().indexOf(q) !== -1;
+            });
+        });
+    } else {
+        ids = ids.filter(function(rid) { return stats[rid].tier === tier; });
+        if (tier === 'habitual') {
+            ids.sort(function(a, b) { return stats[b].countRecent - stats[a].countRecent || recipes[a].name.localeCompare(recipes[b].name); });
+        }
+    }
+    if (noRes) {
+        noRes.textContent = q ? 'Nenhuma receita encontrada.'
+            : tier === 'habitual' ? 'Ainda sem habituais. As receitas feitas 3 ou mais vezes nas \u00faltimas 12 semanas aparecem aqui \u2014 ou fixa uma manualmente.'
+            : tier === 'arquivo' ? 'O arquivo est\u00e1 vazio.'
+            : 'Nenhuma receita aqui.';
+        noRes.classList.toggle('hidden', ids.length > 0);
+    }
     ids.forEach(function(rid) {
         var r = recipes[rid];
+        var st = stats[rid];
         var row = document.createElement('div');
         row.className = 'recipe-row';
         row.dataset.recipeId = rid;
@@ -829,7 +1462,26 @@ function renderRecipesGrid() {
         nameEl.className = 'recipe-row-name';
         nameEl.textContent = r.name;
         nameLine.appendChild(iconEl); nameLine.appendChild(expandBtn); nameLine.appendChild(nameEl);
+        if (!(r.ingredients || []).length) {
+            var draft = document.createElement('span');
+            draft.className = 'pill pill-warn';
+            draft.textContent = 'rascunho';
+            draft.title = 'Ainda sem ingredientes';
+            nameLine.appendChild(draft);
+        }
+        if (st.manual) {
+            var pinPill = document.createElement('span');
+            pinPill.className = 'pill pill-muted';
+            pinPill.textContent = st.manual === 'pin' ? '\ud83d\udccc' : '\ud83d\uddc4\ufe0f';
+            pinPill.title = st.manual === 'pin' ? 'Fixada nas Habituais' : 'Arquivada manualmente';
+            nameLine.appendChild(pinPill);
+        }
         left.appendChild(nameLine);
+        var meta = document.createElement('span');
+        meta.className = 'recipe-row-meta';
+        meta.textContent = (q ? TIER_LABELS[st.tier] + ' \u00b7 ' : '') +
+            (st.count ? 'Feita ' + st.count + '\u00d7 \u00b7 \u00faltima vez ' + timeAgoLabel(st.lastCooked) : 'Ainda n\u00e3o registada no hist\u00f3rico');
+        left.appendChild(meta);
         var ingNames = (r.ingredients || []).map(function(i){ return getIngName(i.ingId) || i.name || ''; }).join(', ');
         if (ingNames) {
             var ingEl = document.createElement('span');
@@ -873,6 +1525,20 @@ function renderRecipesGrid() {
             });
             detail.appendChild(ul);
         }
+        var tierActions = document.createElement('div');
+        tierActions.className = 'recipe-tier-actions';
+        function tierBtn(label, tierValue) {
+            var b = document.createElement('button');
+            b.type = 'button';
+            b.className = 'btn-outline btn-sm';
+            b.textContent = label;
+            b.addEventListener('click', function(e) { e.stopPropagation(); setRecipeTier(rid, tierValue); });
+            tierActions.appendChild(b);
+        }
+        if (st.manual !== 'pin') tierBtn('\ud83d\udccc Fixar nas Habituais', 'pin');
+        if (st.manual !== 'archive') tierBtn('\ud83d\uddc4\ufe0f Arquivar', 'archive');
+        if (st.manual) tierBtn('\u21ba Autom\u00e1tico (' + TIER_LABELS[st.autoTier] + ')', null);
+        detail.appendChild(tierActions);
         function toggleRecipeDetail(e) {
             if (e) e.stopPropagation();
             var open = !detail.classList.contains('hidden');
@@ -887,43 +1553,166 @@ function renderRecipesGrid() {
     });
 }
 
+document.getElementById('recipes-search').addEventListener('input', function() {
+    _recipesQuery = this.value;
+    renderRecipesGrid();
+});
+
 function deleteRecipe(rid) {
     if (!recipes[rid]) return;
-    if (!confirm('Apagar "' + recipes[rid].name + '"?')) return;
-    Object.keys(week).forEach(function(d) {
-        if (week[d] === rid) week[d] = null;
-    });
-    saveWeek(week);
+    var data = recipes[rid];
+    var daysUsing = Object.keys(week).filter(function(d) { return week[d] === rid; });
+    daysUsing.forEach(function(d) { week[d] = null; });
+    if (daysUsing.length) saveWeek(week);
     delete recipes[rid]; deleteRecipeDb(rid);
     refreshAllSelects(); renderRecipesGrid();
+    showUndoToast('Receita "' + data.name + '" apagada', function() {
+        recipes[rid] = data; saveRecipe(rid, data);
+        daysUsing.forEach(function(d) { if (!week[d]) week[d] = rid; });
+        if (daysUsing.length) saveWeek(week);
+        refreshAllSelects(); renderRecipesGrid();
+    });
 }
 
 document.getElementById('clear-list-btn').addEventListener('click', function() {
-    if (!confirm('Limpar a lista de compras?')) return;
+    var snap = { extra: shoppingExtra, done: shoppingDone, gen: generatedFromWeek };
     shoppingExtra = []; shoppingDone = {}; generatedFromWeek = []; saveShopping();
+    if (listEditMode) document.getElementById('edit-list-btn').click();
     renderShoppingList();
+    showUndoToast('Lista de compras limpa', function() {
+        shoppingExtra = snap.extra; shoppingDone = snap.done; generatedFromWeek = snap.gen;
+        saveShopping(); renderShoppingList();
+    });
 });
 
-document.getElementById('clear-week-btn').addEventListener('click', function() {
-    if (!confirm('Limpar a semana?')) return;
-    // Snapshot current state before clearing
+document.getElementById('shopping-empty-go-week').addEventListener('click', function() {
+    switchTab('semana');
+});
+
+// ---- Fecho da semana (end-of-week review) --------------------------------------
+
+var STATUS_LABELS = {
+    done: { icon: '\u2705', label: 'Feito' },
+    skip: { icon: '\u274c', label: 'N\u00e3o feito' },
+    out:  { icon: '\ud83d\udef5', label: 'Comemos fora' }
+};
+var weekCloseOverlay = document.getElementById('week-close-overlay');
+var _closeStatuses = {};
+var _closeCarryTouched = false;
+
+function openWeekClose() {
+    if (!countPlannedMeals(week) && !weekExtras.length) {
+        showToast('A semana j\u00e1 est\u00e1 vazia.');
+        return;
+    }
+    if (!countPlannedMeals(week)) { performCloseWeek({}, false); return; }
+    _closeStatuses = {};
+    _closeCarryTouched = false;
+    DAYS.forEach(function(day, i) { if (getWeekRecipeById(week[String(i)])) _closeStatuses[i] = 'done'; });
+    document.getElementById('week-close-carry').checked = false;
+    renderWeekClose();
+    weekCloseOverlay.classList.remove('hidden');
+}
+
+function closeWeekCloseModal() { weekCloseOverlay.classList.add('hidden'); }
+
+function renderWeekClose() {
+    var list = document.getElementById('week-close-list');
+    list.innerHTML = '';
+    var counts = { done: 0, skip: 0, out: 0 };
+    DAYS.forEach(function(day, i) {
+        var recipe = getWeekRecipeById(week[String(i)]);
+        if (!recipe) return;
+        var st = _closeStatuses[i];
+        counts[st]++;
+        var row = document.createElement('button');
+        row.type = 'button';
+        row.className = 'wc-row wc-' + st;
+        var dayEl = document.createElement('span');
+        dayEl.className = 'wc-day';
+        dayEl.textContent = day.slice(0, 3);
+        var nm = document.createElement('span');
+        nm.className = 'wc-name';
+        nm.textContent = (recipe.icon ? recipe.icon + ' ' : '') + recipe.name;
+        var stEl = document.createElement('span');
+        stEl.className = 'wc-status';
+        stEl.textContent = STATUS_LABELS[st].icon + ' ' + STATUS_LABELS[st].label;
+        row.appendChild(dayEl); row.appendChild(nm); row.appendChild(stEl);
+        row.addEventListener('click', function() {
+            _closeStatuses[i] = nextWeekStatus(_closeStatuses[i]);
+            renderWeekClose();
+        });
+        list.appendChild(row);
+    });
+    var carry = document.getElementById('week-close-carry');
+    if (!_closeCarryTouched) carry.checked = counts.skip > 0;
+    document.getElementById('week-close-carry-wrap').classList.toggle('hidden', !counts.skip);
+    document.getElementById('week-close-summary').textContent =
+        STATUS_LABELS.done.icon + ' ' + counts.done + '  \u00b7  ' +
+        STATUS_LABELS.skip.icon + ' ' + counts.skip + '  \u00b7  ' +
+        STATUS_LABELS.out.icon + ' ' + counts.out;
+}
+
+function performCloseWeek(statuses, carry) {
+    var snapWeek = Object.assign({}, week);
+    var snapExtras = weekExtras.slice();
+    var snapTemp = Object.assign({}, weekTempRecipes);
+    var snapCarried = Object.assign({}, weekCarried);
+    var snapHistory = weekHistory.slice();
     var snapshot = {
         date: new Date().toISOString(),
         week: DAYS.map(function(day, i) {
             var rid = week[String(i)];
             var recipe = getWeekRecipeById(rid);
             if (!recipe) return { day: day, recipe: null };
-            return { day: day, recipe: { name: recipe.name, icon: recipe.icon || '' } };
+            var r = { name: recipe.name, icon: recipe.icon || '' };
+            if (!isTempRecipeId(rid)) r.id = rid;
+            return { day: day, recipe: r, status: statuses[i] || 'done' };
         }),
         lista: generatedFromWeek.map(function(item) { return { name: item.name, qty: item.qty }; })
     };
-    weekHistory = [snapshot].concat(weekHistory).slice(0, 3);
+    weekHistory = [snapshot].concat(weekHistory).slice(0, 20);
     historyIdx = 0;
     saveHistory(weekHistory);
     renderHistorico();
-    week = {}; weekExtras = []; saveWeek(week);
+    var next = {};
+    var nextCarried = {};
+    var carriedCount = 0;
+    if (carry) {
+        Object.keys(statuses).forEach(function(i) {
+            if (statuses[i] !== 'skip') return;
+            var rid = week[String(i)];
+            if (!rid) return;
+            next[String(i)] = rid;
+            nextCarried[String(i)] = rid;
+            carriedCount++;
+        });
+    }
+    week = next; weekCarried = nextCarried; weekExtras = []; saveWeek(week);
     refreshAllSelects();
     renderSemanaExtrasList();
+    renderRecipesGrid();
+    var msg = carriedCount
+        ? 'Semana fechada \u00b7 ' + plural(carriedCount, 'receita transitou', 'receitas transitaram')
+        : 'Semana limpa e guardada no hist\u00f3rico';
+    showUndoToast(msg, function() {
+        week = snapWeek; weekExtras = snapExtras; weekTempRecipes = snapTemp; weekCarried = snapCarried;
+        weekHistory = snapHistory; historyIdx = 0;
+        saveHistory(weekHistory); renderHistorico();
+        db.collection('data').doc('week').set({ days: week, extras: weekExtras, tempRecipes: weekTempRecipes, carried: weekCarried }).catch(console.error);
+        refreshAllSelects(); renderSemanaExtrasList(); renderRecipesGrid();
+    });
+}
+
+document.getElementById('clear-week-btn').addEventListener('click', openWeekClose);
+document.getElementById('week-close-x').addEventListener('click', closeWeekCloseModal);
+document.getElementById('week-close-cancel').addEventListener('click', closeWeekCloseModal);
+weekCloseOverlay.addEventListener('click', function(e) { if (e.target === weekCloseOverlay) closeWeekCloseModal(); });
+document.getElementById('week-close-carry').addEventListener('change', function() { _closeCarryTouched = true; });
+document.getElementById('week-close-confirm').addEventListener('click', function() {
+    var carry = document.getElementById('week-close-carry').checked;
+    closeWeekCloseModal();
+    performCloseWeek(_closeStatuses, carry);
 });
 
 // ---- Gerar Lista modal -----------------------------------------------------
@@ -933,7 +1722,7 @@ var pendingListItems = []; // { name, qty, sources, removed }
 
 function buildIngredientTotals() {
     var totals = {};
-    function addFromRecipe(recipeId) {
+    function addFromRecipe(recipeId, carried) {
         var recipe = getWeekRecipeById(recipeId);
         if (!recipe) return;
         var recipeName = recipe.name;
@@ -941,8 +1730,9 @@ function buildIngredientTotals() {
             var name = ing.ingId ? getIngName(ing.ingId) : (ing.name || '');
             if (!name) return;
             var key = name.trim().toLowerCase();
-            if (!totals[key]) totals[key] = { name: name.trim(), qty: 0, sources: [], ingId: ing.ingId || null };
+            if (!totals[key]) totals[key] = { name: name.trim(), qty: 0, sources: [], ingId: ing.ingId || null, onlyCarried: true };
             totals[key].qty += parseFloat(ing.qty) || 0;
+            if (!carried) totals[key].onlyCarried = false;
             if (recipeName && totals[key].sources.indexOf(recipeName) === -1) totals[key].sources.push(recipeName);
         });
     }
@@ -957,20 +1747,35 @@ function buildIngredientTotals() {
         }
         if (!name) return;
         var key  = name.trim().toLowerCase();
-        if (!totals[key]) totals[key] = { name: name, qty: 0, sources: [], ingId: ingId };
+        if (!totals[key]) totals[key] = { name: name, qty: 0, sources: [], ingId: ingId, onlyCarried: false };
         totals[key].qty += parseFloat(entry.qty) || 0;
+        totals[key].onlyCarried = false;
         if (label && totals[key].sources.indexOf(label) === -1) totals[key].sources.push(label);
     }
-    Object.keys(week).forEach(function(d) { addFromRecipe(week[d]); });
+    Object.keys(week).forEach(function(d) {
+        if (week[d]) addFromRecipe(week[d], weekCarried[d] === week[d]);
+    });
     weekExtras.forEach(function(e) { addFromIngEntry(e, 'Extra'); });
     return Object.keys(totals).sort().map(function(k) { return Object.assign({ key: k }, totals[k]); });
 }
 
+var pendingHousehold = []; // due household items shown at the top of the review: { ingId, name, decision }
+
 function openGerarModal() {
     pendingListItems = buildIngredientTotals().map(function(item) {
-        return { name: item.name, qty: item.qty, sources: item.sources, removed: false, ingId: item.ingId || null };
+        var ingId = item.ingId || getIngByName(item.name);
+        var hint = null;
+        if (item.onlyCarried) hint = 'carried';
+        else if (ingId && ingredients[ingId] && usuallyHave(ingredients[ingId].haveStats)) hint = 'usual';
+        return { name: item.name, qty: item.qty, sources: item.sources, removed: !!hint, hint: hint, ingId: ingId || null };
     });
-    if (!pendingListItems.length) { alert('Nao ha receitas na semana para gerar a lista.'); return; }
+    var listed = {};
+    pendingListItems.forEach(function(i) { listed[i.name.trim().toLowerCase()] = true; });
+    getPendingShoppingKeys().forEach(function(k) { listed[k] = true; });
+    pendingHousehold = getDueHouseholdIds().filter(function(id) {
+        return !listed[ingredients[id].name.trim().toLowerCase()];
+    }).map(function(id) { return { ingId: id, name: ingredients[id].name, decision: null }; });
+    if (!pendingListItems.length && !pendingHousehold.length) { showToast('Ainda não há refeições nem extras na semana.', { type: 'error' }); return; }
     renderGerarModal();
     gerarOverlay.classList.remove('hidden');
 }
@@ -979,10 +1784,69 @@ function renderGerarModal() {
     var body = document.getElementById('gerar-body');
     body.innerHTML = '';
 
+    var toBuy = pendingListItems.filter(function(i) { return !i.removed; }).length +
+                pendingHousehold.filter(function(h) { return h.decision === 'buy'; }).length;
+    var have  = pendingListItems.length - pendingListItems.filter(function(i) { return !i.removed; }).length;
+    var counter = document.getElementById('gerar-counter');
+    if (counter) counter.textContent = plural(toBuy, 'item para comprar', 'itens para comprar') + ' \u00b7 ' + have + ' j\u00e1 em casa';
+    var approve = document.getElementById('gerar-aprovar');
+    if (approve) approve.textContent = '\u2713 Confirmar lista (' + toBuy + ')';
+
+    var intro = document.createElement('p');
+    intro.className = 'gerar-intro';
+    intro.textContent = 'Percorre a casa e toca no que j\u00e1 tens \u2014 fica riscado. Toca outra vez para voltar a p\u00f4r.';
+    body.appendChild(intro);
+
+    if (pendingHousehold.length) {
+        var hh = document.createElement('div');
+        hh.className = 'gerar-household';
+        var hhTitle = document.createElement('div');
+        hhTitle.className = 'gerar-cat-header gerar-household-header';
+        hhTitle.textContent = '\u23f0 Artigos de casa a verificar \u00b7 ' + pendingHousehold.length;
+        hh.appendChild(hhTitle);
+        pendingHousehold.forEach(function(h) {
+            var row = document.createElement('div');
+            row.className = 'gerar-ing-row gerar-hh-row';
+            var left = document.createElement('div');
+            left.className = 'gerar-ing-left';
+            var nm = document.createElement('span');
+            nm.className = 'gerar-ing-name';
+            nm.textContent = CATEGORIA_ICONS[getIngCategoria(h.ingId)] + ' ' + h.name;
+            left.appendChild(nm);
+            var rec = ingredients[h.ingId].recurring || {};
+            var sub = document.createElement('span');
+            sub.className = 'gerar-ing-sources';
+            sub.textContent = rec.lastBought ? 'Comprado ' + timeAgoLabel(rec.lastBought) + ' \u00b7 costuma durar ~' + (rec.every || DEFAULT_RECURRING_EVERY) + ' dias' : 'Ainda sem compras registadas';
+            left.appendChild(sub);
+            row.appendChild(left);
+            var right = document.createElement('div');
+            right.className = 'gerar-hh-btns';
+            [['have', '\u2713 Temos'], ['buy', '\ud83d\uded2 Comprar']].forEach(function(opt) {
+                var b = document.createElement('button');
+                b.type = 'button';
+                b.className = 'hh-choice hh-choice-' + opt[0] + (h.decision === opt[0] ? ' active' : '');
+                b.textContent = opt[1];
+                b.addEventListener('click', function() {
+                    h.decision = h.decision === opt[0] ? null : opt[0];
+                    renderGerarModal();
+                });
+                right.appendChild(b);
+            });
+            row.appendChild(right);
+            hh.appendChild(row);
+        });
+        body.appendChild(hh);
+    }
+
     function renderGerarItem(item, idx) {
         var row = document.createElement('div');
-        row.className = 'gerar-ing-row' + (item.removed ? ' gerar-ing-removed' : '');
+        row.className = 'gerar-ing-row gerar-ing-tappable' + (item.removed ? ' gerar-ing-removed' : '');
         row.dataset.idx = idx;
+        row.addEventListener('click', function(e) {
+            if (e.target.closest('input')) return;
+            pendingListItems[idx].removed = !pendingListItems[idx].removed;
+            renderGerarModal();
+        });
 
         var left = document.createElement('div');
         left.className = 'gerar-ing-left';
@@ -998,6 +1862,15 @@ function renderGerarModal() {
         nameEl.textContent = item.name;
         nameLine.appendChild(iconEl);
         nameLine.appendChild(nameEl);
+        if (item.hint) {
+            var hintEl = document.createElement('span');
+            hintEl.className = 'pill ' + (item.hint === 'usual' ? 'pill-purple' : 'pill-accent');
+            hintEl.textContent = item.hint === 'usual' ? 'costumam ter' : 'da semana passada';
+            hintEl.title = item.hint === 'usual'
+                ? 'Nas \u00faltimas listas estava quase sempre em casa'
+                : 'S\u00f3 \u00e9 usado numa receita que transitou da semana passada \u2014 j\u00e1 deve estar comprado';
+            nameLine.appendChild(hintEl);
+        }
         left.appendChild(nameLine);
 
         if (item.sources && item.sources.length) {
@@ -1010,47 +1883,40 @@ function renderGerarModal() {
 
         var right = document.createElement('div');
         right.className = 'gerar-ing-right';
-
         if (!item.removed) {
             var qtyInput = document.createElement('input');
             qtyInput.type = 'number';
             qtyInput.className = 'gerar-ing-qty';
             qtyInput.value = Math.round(item.qty * 1000) / 1000 || '';
             qtyInput.min = '0'; qtyInput.step = 'any';
-            qtyInput.addEventListener('change', (function(i) { return function() {
-                pendingListItems[i].qty = parseFloat(qtyInput.value) || 0;
-            }; })(idx));
+            qtyInput.addEventListener('change', function() {
+                pendingListItems[idx].qty = parseFloat(qtyInput.value) || 0;
+            });
             right.appendChild(qtyInput);
         }
-
-        var toggleBtn = document.createElement('button');
-        toggleBtn.className = 'btn-icon gerar-toggle';
-        toggleBtn.title = item.removed ? 'Adicionar de volta' : 'Ja tenho — remover';
-        toggleBtn.textContent = item.removed ? '\u21a9' : '\u2715';
-        toggleBtn.addEventListener('click', (function(i) { return function() {
-            pendingListItems[i].removed = !pendingListItems[i].removed;
-            renderGerarModal();
-        }; })(idx));
-        right.appendChild(toggleBtn);
+        var check = document.createElement('span');
+        check.className = 'gerar-have-check' + (item.removed ? ' on' : '');
+        check.textContent = item.removed ? '\u2713 temos' : 'temos?';
+        right.appendChild(check);
         row.appendChild(right);
         body.appendChild(row);
     }
 
-    // Group by categoria
-    var byCategory = {};
-    CATEGORIAS.forEach(function(cat) { byCategory[cat] = []; });
+    // Group by where things are kept at home, so the review follows a walk through the house.
+    var byLoc = {};
+    HOUSE_LOCATIONS.forEach(function(l) { byLoc[l.id] = []; });
     pendingListItems.forEach(function(item, idx) {
         var cat = item.ingId ? getIngCategoria(item.ingId) : getIngCategoriaByName(item.name);
-        if (!byCategory[cat]) cat = 'Outros';
-        byCategory[cat].push({ item: item, idx: idx });
+        byLoc[getHouseLocation(cat)].push({ item: item, idx: idx });
     });
-
-    CATEGORIAS.forEach(function(cat) {
-        var entries = byCategory[cat];
+    HOUSE_LOCATIONS.forEach(function(loc) {
+        var entries = byLoc[loc.id];
         if (!entries.length) return;
+        entries.sort(function(a, b) { return a.item.name.localeCompare(b.item.name); });
+        var checked = entries.filter(function(e) { return e.item.removed; }).length;
         var header = document.createElement('div');
         header.className = 'gerar-cat-header';
-        header.textContent = cat;
+        header.textContent = loc.icon + ' ' + loc.label + ' \u00b7 ' + checked + '/' + entries.length + ' em casa';
         body.appendChild(header);
         entries.forEach(function(e) { renderGerarItem(e.item, e.idx); });
     });
@@ -1062,14 +1928,37 @@ document.getElementById('gerar-cancel').addEventListener('click', function() { g
 gerarOverlay.addEventListener('click', function(e) { if (e.target === gerarOverlay) gerarOverlay.classList.add('hidden'); });
 
 document.getElementById('gerar-aprovar').addEventListener('click', function() {
+    var now = Date.now();
+    var dictChanged = false;
+    // Learn what is usually at home (carried-over items say nothing about habits).
+    pendingListItems.forEach(function(item) {
+        if (!item.ingId || !ingredients[item.ingId] || item.hint === 'carried') return;
+        ingredients[item.ingId].haveStats = updateHaveStats(ingredients[item.ingId].haveStats, item.removed);
+        dictChanged = true;
+    });
+    var householdBuy = [];
+    pendingHousehold.forEach(function(h) {
+        var ing = ingredients[h.ingId];
+        if (!ing) return;
+        if (h.decision === 'have') {
+            ing.recurring = Object.assign({ every: DEFAULT_RECURRING_EVERY }, ing.recurring || {}, { lastChecked: now });
+            dictChanged = true;
+        } else if (h.decision === 'buy') {
+            householdBuy.push({ name: ing.name, qty: 1, sources: ['Casa'], key: ing.name.trim().toLowerCase(), ingId: h.ingId });
+        }
+    });
+    if (dictChanged) saveIngredients(ingredients);
+
     generatedFromWeek = pendingListItems
         .filter(function(item) { return !item.removed; })
-        .map(function(item) { return { name: item.name, qty: item.qty, sources: item.sources, key: item.name.trim().toLowerCase(), ingId: item.ingId || null }; });
+        .map(function(item) { return { name: item.name, qty: item.qty, sources: item.sources, key: item.name.trim().toLowerCase(), ingId: item.ingId || null }; })
+        .concat(householdBuy);
     saveShopping();
     renderShoppingList();
+    updateHouseholdBanner();
     gerarOverlay.classList.add('hidden');
-    // Switch to Lista tab
-    document.querySelector('.tab-btn[data-tab="lista"]').click();
+    switchTab('lista');
+    showToast('Lista gerada com ' + plural(generatedFromWeek.length, 'ingrediente', 'ingredientes'), { type: 'success' });
 });
 
 // ---- History (Histórico) --------------------------------------------------
@@ -1082,7 +1971,7 @@ function renderHistorico() {
     if (!weekHistory.length) {
         var emptyP = document.createElement('p');
         emptyP.className = 'empty-msg';
-        emptyP.textContent = 'Sem hist\u00f3rico ainda. Limpa a semana para criar um registo.';
+        emptyP.textContent = 'Sem hist\u00f3rico ainda. Fecha a semana para criar um registo.';
         el.appendChild(emptyP);
         return;
     }
@@ -1123,22 +2012,24 @@ function renderHistorico() {
     // Week grid
     var weekHdr = document.createElement('h4');
     weekHdr.className = 'hist-section-title';
-    weekHdr.textContent = 'Semana';
+    var sc = countWeekStatuses(entry);
+    weekHdr.textContent = 'Semana \u00b7 ' + STATUS_LABELS.done.icon + ' ' + sc.done +
+        (sc.skip ? '  ' + STATUS_LABELS.skip.icon + ' ' + sc.skip : '') +
+        (sc.out ? '  ' + STATUS_LABELS.out.icon + ' ' + sc.out : '');
     el.appendChild(weekHdr);
 
     var weekGrid = document.createElement('div');
     weekGrid.className = 'hist-week-grid';
     (entry.week || []).forEach(function(slot) {
         var card = document.createElement('div');
-        card.className = 'hist-day-card' + (slot.recipe ? '' : ' hist-day-empty');
+        card.className = 'hist-day-card' + (slot.recipe ? '' : ' hist-day-empty') +
+            (slot.recipe && slot.status && slot.status !== 'done' ? ' hist-day-' + slot.status : '');
         var dayLbl = document.createElement('span');
         dayLbl.className = 'hist-day-label';
         dayLbl.textContent = slot.day;
         card.appendChild(dayLbl);
         if (slot.recipe) {
-            var rid = Object.keys(recipes).find(function(id) {
-                return recipes[id].name === slot.recipe.name;
-            });
+            var rid = matchHistoryRecipe(slot.recipe, recipes);
             if (rid) {
                 card.style.cursor = 'pointer';
                 card.title = 'Ver ingredientes';
@@ -1156,6 +2047,12 @@ function renderHistorico() {
             nm.className = 'hist-recipe-name';
             nm.textContent = slot.recipe.name;
             card.appendChild(nm);
+            if (slot.status && slot.status !== 'done' && STATUS_LABELS[slot.status]) {
+                var stb = document.createElement('span');
+                stb.className = 'hist-status';
+                stb.textContent = STATUS_LABELS[slot.status].icon + ' ' + STATUS_LABELS[slot.status].label;
+                card.appendChild(stb);
+            }
         } else {
             var none = document.createElement('span');
             none.className = 'hist-day-none';
@@ -1217,6 +2114,7 @@ function renderIngredientsDict() {
     var emptyMsg = document.getElementById('ing-dict-empty');
     list.innerHTML = '';
     var ids = Object.keys(ingredients);
+    renderPorArrumar(ids);
     if (!ids.length) { emptyMsg.classList.remove('hidden'); return; }
     emptyMsg.classList.add('hidden');
     var byCategory = {};
@@ -1236,6 +2134,62 @@ function renderIngredientsDict() {
         list.appendChild(header);
         catIds.forEach(function(id) { list.appendChild(buildIngDictRow(id)); });
     });
+}
+
+function renderPorArrumar(ids) {
+    var box = document.getElementById('por-arrumar');
+    if (!box) return;
+    var outros = ids.filter(function(id) { return (ingredients[id].categoria || 'Outros') === 'Outros'; })
+        .sort(function(a, b) { return ingredients[a].name.localeCompare(ingredients[b].name); });
+    box.innerHTML = '';
+    box.classList.toggle('hidden', !outros.length);
+    if (!outros.length) return;
+    var title = document.createElement('div');
+    title.className = 'por-arrumar-title';
+    title.textContent = '\ud83e\uddf9 Por arrumar \u00b7 ' + outros.length;
+    box.appendChild(title);
+    var hint = document.createElement('p');
+    hint.className = 'por-arrumar-hint';
+    hint.textContent = 'Estes ingredientes est\u00e3o em \u201cOutros\u201d. Um toque na categoria certa e fica arrumado \u2014 sem pressa, faz um ou dois de cada vez.';
+    box.appendChild(hint);
+    outros.slice(0, 5).forEach(function(id) {
+        var row = document.createElement('div');
+        row.className = 'por-arrumar-row';
+        var nm = document.createElement('div');
+        nm.className = 'por-arrumar-name';
+        nm.textContent = ingredients[id].name;
+        row.appendChild(nm);
+        var chips = document.createElement('div');
+        chips.className = 'por-arrumar-chips';
+        CATEGORIAS.forEach(function(cat) {
+            if (cat === 'Outros') return;
+            var c = document.createElement('button');
+            c.type = 'button';
+            c.className = 'cat-chip';
+            c.textContent = CATEGORIA_ICONS[cat] || cat;
+            c.title = cat;
+            c.setAttribute('aria-label', cat);
+            c.addEventListener('click', function() {
+                ingredients[id].categoria = cat;
+                saveIngredients(ingredients);
+                renderIngredientsDict();
+                showUndoToast(ingredients[id].name + ' \u2192 ' + cat, function() {
+                    ingredients[id].categoria = 'Outros';
+                    saveIngredients(ingredients);
+                    renderIngredientsDict();
+                });
+            });
+            chips.appendChild(c);
+        });
+        row.appendChild(chips);
+        box.appendChild(row);
+    });
+    if (outros.length > 5) {
+        var more = document.createElement('p');
+        more.className = 'por-arrumar-hint';
+        more.textContent = '+ ' + (outros.length - 5) + ' mais depois destes';
+        box.appendChild(more);
+    }
 }
 
 function buildIngDictRow(id) {
@@ -1334,7 +2288,7 @@ function buildIngEditRow(id) {
         var conflict = Object.keys(ingredients).find(function(oid) {
             return oid !== id && ingredients[oid].name.toLowerCase() === newName.toLowerCase();
         });
-        if (conflict) { alert('Ja existe um ingrediente com esse nome.'); input.focus(); return; }
+        if (conflict) { showToast('Já existe um ingrediente com esse nome.', { type: 'error' }); input.focus(); return; }
         ingredients[id].name = newName;
         ingredients[id].categoria = catSelect.value;
         saveIngredients(ingredients);
@@ -1349,8 +2303,11 @@ function buildIngEditRow(id) {
         delBtn.style.cssText = 'color:var(--red);border:1px solid var(--red);opacity:.7;border-radius:4px;padding:.15rem .4rem;font-size:.85rem';
         delBtn.textContent = '\u2715';
         delBtn.addEventListener('click', function() {
-            if (!confirm('Remover "' + ingredients[id].name + '" do dicionario?')) return;
+            var removed = ingredients[id];
             delete ingredients[id]; saveIngredients(ingredients); renderIngredientsDict();
+            showUndoToast('"' + removed.name + '" removido do dicionário', function() {
+                ingredients[id] = removed; saveIngredients(ingredients); renderIngredientsDict();
+            });
         });
         btns.appendChild(delBtn);
     }
@@ -1414,9 +2371,10 @@ function updateSelectedIconButton() {
         btn.classList.remove('is-empty');
         btn.title = 'Trocar ícone';
     } else {
-        btn.textContent = '+';
+        var nameVal = (document.getElementById('recipe-name-input') || {}).value || '';
+        btn.textContent = autoAssignIcon(nameVal, getRecipeRowsFromModal());
         btn.classList.add('is-empty');
-        btn.title = 'Escolher ícone';
+        btn.title = 'Ícone automático — toca para escolher outro';
     }
 }
 
@@ -1458,15 +2416,19 @@ function openAddModal(rid) {
     if (useWeekBtn) useWeekBtn.classList.toggle('hidden', !!rid || pendingNewRecipeDay === null || pendingNewRecipeDay === undefined);
     document.getElementById('recipe-name-input').value = rid ? recipes[rid].name : (pendingNewRecipeName || '');
     document.getElementById('ingredients-list').innerHTML = '';
-    renderIconPicker(pendingIcon);
-    updateSelectedIconButton();
-    setIconPickerVisible(!rid || !pendingIcon);
     var ings = rid ? (recipes[rid].ingredients || []) : [];
     if (ings.length) ings.forEach(function(ing) { addIngredientRow(getIngName(ing.ingId) || ing.name || '', ing.qty); });
     else addIngredientRow();
+    renderIconPicker(pendingIcon);
+    updateSelectedIconButton();
+    setIconPickerVisible(false);
     modalOverlay.classList.remove('hidden');
     document.getElementById('recipe-name-input').focus();
 }
+
+document.getElementById('recipe-name-input').addEventListener('input', function() {
+    if (!pendingIcon) updateSelectedIconButton();
+});
 
 function closeModal() {
     modalOverlay.classList.add('hidden');
@@ -1485,14 +2447,10 @@ function setTemporaryRecipeForPendingDay() {
 
     var rows = getRecipeRowsFromModal();
     if (!rows.length) {
-        alert('Adiciona pelo menos um ingrediente.');
+        showToast('Adiciona pelo menos um ingrediente.', { type: 'error' });
         return;
     }
-    if (!pendingIcon) {
-        alert('Escolhe um ícone para a receita.');
-        setIconPickerVisible(true);
-        return;
-    }
+    if (!pendingIcon) pendingIcon = autoAssignIcon(name, rows);
 
     var tempId = createTempRecipeId();
     weekTempRecipes[tempId] = {
@@ -1893,13 +2851,16 @@ function saveRecipeWithIngredientsAtomic(recipeId, recipeName, rows, icon, optio
                 else parsedIngs.push({ name: row.name, qty: row.qty });
             });
 
-            if (!parsedIngs.length) {
+            if (!parsedIngs.length && !opts.allowDraft) {
                 var noIngErr = new Error('RECIPE_WITHOUT_INGREDIENTS');
                 noIngErr.code = 'RECIPE_WITHOUT_INGREDIENTS';
                 throw noIngErr;
             }
 
             var recipeData = { name: recipeName, ingredients: parsedIngs, icon: icon || DEFAULT_ICONS[0] };
+            var existing = recipes[recipeId];
+            if (existing && existing.tier) recipeData.tier = existing.tier;
+            recipeData.createdAt = (existing && existing.createdAt) || new Date().toISOString();
             tx.set(recipeRef, recipeData);
             if (dictChanged && allowCreateIngredients) tx.set(ingredientsRef, { dict: mergedDict });
 
@@ -1919,21 +2880,19 @@ document.getElementById('modal-save').addEventListener('click', function() {
     var name = nameInput.value.trim();
     if (!name) { nameInput.focus(); nameInput.style.borderColor='red'; return; }
     if (hasRecipeNameConflict(name, editingId)) {
-        alert('Ja existe uma receita com esse nome.');
+        showToast('Já existe uma receita com esse nome.', { type: 'error' });
         nameInput.focus();
         return;
     }
     nameInput.style.borderColor='';
     var rows = getRecipeRowsFromModal();
-    if (!rows.length) {
-        alert('Adiciona pelo menos um ingrediente.');
+    var fromWeekFlowCheck = pendingNewRecipeDay !== null && pendingNewRecipeDay !== undefined;
+    if (!rows.length && fromWeekFlowCheck) {
+        showToast('Adiciona pelo menos um ingrediente.', { type: 'error' });
         return;
     }
-    if (!pendingIcon) {
-        alert('Escolhe um ícone para a receita.');
-        setIconPickerVisible(true);
-        return;
-    }
+    var isDraft = !rows.length;
+    if (!pendingIcon) pendingIcon = autoAssignIcon(name, rows);
 
     saveBtn.disabled = true;
     var oldLabel = saveBtn.textContent;
@@ -1946,8 +2905,9 @@ document.getElementById('modal-save').addEventListener('click', function() {
         saveBtn.textContent = oldLabel;
     }
 
-    saveRecipeWithIngredientsAtomic(id, name, rows, pendingIcon, { allowCreateIngredients: !fromWeekFlow })
+    saveRecipeWithIngredientsAtomic(id, name, rows, pendingIcon, { allowCreateIngredients: !fromWeekFlow, allowDraft: isDraft })
         .then(function(result) {
+            if (isDraft) showToast('Guardada como rascunho \u2014 acrescenta os ingredientes quando der jeito.', { type: 'success' });
             var dayToFill = pendingNewRecipeDay;
             if (result.dictChanged) ingredients = result.mergedDict;
             recipes[result.recipeId] = result.recipeData;
@@ -1965,11 +2925,11 @@ document.getElementById('modal-save').addEventListener('click', function() {
         .catch(function(err) {
             console.error(err);
             if (err && err.code === 'RECIPE_WITHOUT_INGREDIENTS') {
-                alert('Adiciona pelo menos um ingrediente.');
+                showToast('Adiciona pelo menos um ingrediente.', { type: 'error' });
                 resetSaveButton();
                 return;
             }
-            alert('Nao foi possivel guardar agora. Tenta novamente.');
+            showToast('Não foi possível guardar agora. Tenta novamente.', { type: 'error' });
             resetSaveButton();
         });
 });
@@ -2062,21 +3022,26 @@ document.getElementById('view-delete').addEventListener('click', function() {
     var panel = document.getElementById('semana-historico-panel');
     var weekGrid = document.getElementById('week-grid');
     var extrasSection = document.getElementById('semana-extras-section');
+    var ctaBar = document.getElementById('week-cta-bar');
+    var quick = document.getElementById('quicklist');
     if (!btn || !panel) return;
     btn.addEventListener('click', function() {
         var isHidden = panel.classList.contains('hidden');
+        if (ctaBar) ctaBar.classList.toggle('hidden', isHidden);
         if (isHidden) {
             historyIdx = 0;
             renderHistorico();
             panel.classList.remove('hidden');
             if (weekGrid) weekGrid.classList.add('hidden');
             if (extrasSection) extrasSection.classList.add('hidden');
+            if (quick) quick.classList.add('hidden');
             btn.classList.add('active');
             btn.innerHTML = '&#x1F4C5; Esta Semana';
         } else {
             panel.classList.add('hidden');
             if (weekGrid) weekGrid.classList.remove('hidden');
             if (extrasSection) extrasSection.classList.remove('hidden');
+            if (quick) quick.classList.remove('hidden');
             btn.classList.remove('active');
             btn.innerHTML = '&#x1F4C5; Hist&#xF3;rico';
         }
@@ -2253,7 +3218,7 @@ document.getElementById('import-file-input').addEventListener('change', function
     reader.onload = function(ev) {
         e.target.value = '';
         var data;
-        try { data = parseImportCSV(ev.target.result); } catch(err) { alert('Ficheiro CSV invalido: ' + err.message); return; }
+        try { data = parseImportCSV(ev.target.result); } catch(err) { showToast('Ficheiro CSV inválido: ' + err.message, { type: 'error', duration: 6000 }); return; }
         openImportModal(data);
     };
     reader.readAsText(file, 'UTF-8');
@@ -2479,7 +3444,9 @@ document.getElementById('import-confirm').addEventListener('click', function() {
         // Update if the recipe ID already exists; otherwise create with that ID (or a new one)
         var id = rec.id ? rec.id : slugId(rec.name, Object.keys(recipes));
         var recIcon = rec.icon || autoAssignIcon(rec.name, ings.map(function(i){ return { name: getIngName(i.ingId) }; })) || DEFAULT_ICONS[0];
-        recipes[id] = { name: rec.name, ingredients: ings, icon: recIcon };
+        var prevRec = recipes[id] || {};
+        recipes[id] = { name: rec.name, ingredients: ings, icon: recIcon, createdAt: prevRec.createdAt || new Date().toISOString() };
+        if (prevRec.tier) recipes[id].tier = prevRec.tier;
         saveRecipe(id, recipes[id]); count.rec++;
     });
     if (ingChanged2) saveIngredients(ingredients);
@@ -2487,35 +3454,34 @@ document.getElementById('import-confirm').addEventListener('click', function() {
     closeImportModal();
     renderIngredientsDict();
     refreshAllSelects(); renderRecipesGrid();
-    alert('Importado: ' + count.rec + ' receita(s), ' + count.ing + ' ingrediente(s) novo(s).');
+    showToast('Importado: ' + count.rec + ' receita(s), ' + count.ing + ' ingrediente(s) novo(s).', { type: 'success', duration: 5000 });
 });
 
 // ---- Mobile tab navigation --------------------------------------------------
 
-(function() {
-    var TAB_SECTIONS = {
-        lista:    ['section-lista'],
-        semana:   ['section-semana'],
-        receitas: ['section-receitas']
-    };
-    var ALL = ['section-lista','section-semana','section-receitas'];
+var TAB_SECTIONS = {
+    lista:    'section-lista',
+    semana:   'section-semana',
+    receitas: 'section-receitas'
+};
 
-    function switchTab(name) {
-        document.querySelectorAll('.tab-btn').forEach(function(btn) {
-            btn.classList.toggle('active', btn.dataset.tab === name);
-        });
-        ALL.forEach(function(id) { document.getElementById(id).classList.remove('tab-active'); });
-        (TAB_SECTIONS[name] || []).forEach(function(id) { document.getElementById(id).classList.add('tab-active'); });
-        var bar = document.getElementById('week-action-bar');
-        if (bar) bar.style.display = (name === 'lista' || name === 'semana') ? '' : 'none';
-    }
-
+function switchTab(name) {
+    if (!TAB_SECTIONS[name]) name = 'semana';
     document.querySelectorAll('.tab-btn').forEach(function(btn) {
-        btn.addEventListener('click', function() { switchTab(btn.dataset.tab); });
+        btn.classList.toggle('active', btn.dataset.tab === name);
     });
+    Object.keys(TAB_SECTIONS).forEach(function(t) {
+        document.getElementById(TAB_SECTIONS[t]).classList.toggle('tab-active', t === name);
+    });
+    var main = document.querySelector('main');
+    if (main) main.scrollTop = 0;
+}
 
-    switchTab('lista');
-})();
+document.querySelectorAll('.tab-btn').forEach(function(btn) {
+    btn.addEventListener('click', function() { switchTab(btn.dataset.tab); });
+});
+
+switchTab('semana');
 
 // ---- Auto-icon & Deduplication ----------------------------------------------
 
@@ -2575,7 +3541,7 @@ function _runDedup(silent) {
         if (toDelete.length) msg += toDelete.length + ' duplicada(s) removida(s). ';
         else msg += 'Sem duplicatas encontradas. ';
         msg += iconCount + ' ícone(s) atualizados.';
-        alert(msg);
+        showToast(msg, { type: 'success', duration: 5000 });
     }
 }
 
@@ -2589,6 +3555,9 @@ function autoCategorizeIngredients() {
     Object.keys(ingredients).forEach(function(id) {
         if (!ingredients[id].categoria) {
             ingredients[id].categoria = autoAssignCategoria(ingredients[id].name);
+            changed = true;
+        } else if (ingredients[id].categoria === 'Outros' && autoAssignCategoria(ingredients[id].name) === 'Casa e Higiene') {
+            ingredients[id].categoria = 'Casa e Higiene';
             changed = true;
         }
     });
