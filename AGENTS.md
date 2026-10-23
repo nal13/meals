@@ -21,6 +21,15 @@ No build step. Open `index.html` directly in a browser, or:
 py -m http.server 8080   # Python
 ```
 
+## Deploy
+
+- When asked to deploy, publish the current `main` to the personal GitHub Pages repository `nal13/meals` using the `pessoal` remote (`https://github.com/nal13/meals.git`), never `origin` or the work repository `nunogouveia91/meal-planner`.
+- Confirm the current branch is `main`, the `pessoal` remote URL matches exactly, and identify the outgoing commits before pushing. Review outgoing tracked changes for secrets or unrelated/private content.
+- Never discard changes or force-push. Keep unrelated and untracked/local-only files out of the push. If the requested deployment includes intentional uncommitted changes, review them and stage only those requested files; ask before committing if it is unclear what should be included. Stop if there are unexpected tracked changes, unsafe content, or the remote/branch does not match.
+- Run `npm test`; do not push if tests fail.
+- Push with a normal fast-forward `git push pessoal main`. If there are no outgoing commits but a redeploy is explicitly requested, rerun the existing GitHub Actions deploy workflow for `nal13/meals` instead of creating an empty commit.
+- Verify the workflow completed successfully and the site is available at `https://nal13.github.io/meals/`. If Pages/Actions is misconfigured or verification fails, report the exact issue without claiming success.
+
 ## Conventions
 
 - **Pure functions belong in `utils.js`**, not `script.js`. If a function needs no DOM and no Firebase, put it there and export via `module.exports`.
